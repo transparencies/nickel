@@ -475,10 +475,6 @@ pub enum UnaryOp<CapturedTerm> {
     ///
     /// See `GoDom`.
     GoCodom(),
-    /// Go to a specific field in the type path of a label.
-    ///
-    /// See `GoDom`.
-    GoField(Ident),
     /// Append text to the tag of a label.
     Tag(String),
 
@@ -542,7 +538,6 @@ impl<Ty> UnaryOp<Ty> {
             Pol() => Pol(),
             GoDom() => GoDom(),
             GoCodom() => GoCodom(),
-            GoField(id) => GoField(id),
             Tag(s) => Tag(s),
 
             Wrap() => Wrap(),
@@ -579,6 +574,10 @@ pub enum BinaryOp<CapturedTerm> {
     ///
     /// See `Wrap` in [`UnaryOp`](enum.UnaryOp.html).
     Unwrap(),
+    /// Go to a specific field in the type path of a label.
+    ///
+    /// See `GoDom`.
+    GoField(),
     /// Equality on booleans.
     EqBool(),
     /// Extend a record with a dynamic field.
@@ -612,6 +611,7 @@ impl<Ty> BinaryOp<Ty> {
             Plus() => Plus(),
             PlusStr() => PlusStr(),
             Unwrap() => Unwrap(),
+            GoField() => GoField(),
             EqBool() => EqBool(),
             DynRemove() => DynRemove(),
             DynAccess() => DynAccess(),

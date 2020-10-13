@@ -1295,14 +1295,12 @@ pub fn get_uop_type(
             ))
         }
         // Dyn -> Dyn
-        UnaryOp::ChangePolarity()
-        | UnaryOp::GoDom()
-        | UnaryOp::GoCodom()
-        | UnaryOp::GoField(_)
-        | UnaryOp::Tag(_) => TypeWrapper::Concrete(AbsType::arrow(
-            Box::new(TypeWrapper::Concrete(AbsType::Dyn())),
-            Box::new(TypeWrapper::Concrete(AbsType::Dyn())),
-        )),
+        UnaryOp::ChangePolarity() | UnaryOp::GoDom() | UnaryOp::GoCodom() | UnaryOp::Tag(_) => {
+            TypeWrapper::Concrete(AbsType::arrow(
+                Box::new(TypeWrapper::Concrete(AbsType::Dyn())),
+                Box::new(TypeWrapper::Concrete(AbsType::Dyn())),
+            ))
+        }
         // Sym -> Dyn -> Dyn
         UnaryOp::Wrap() => TypeWrapper::Concrete(AbsType::arrow(
             Box::new(TypeWrapper::Concrete(AbsType::Sym())),
@@ -1410,6 +1408,16 @@ pub fn get_bop_type(
         ))),
         // Sym -> Dyn -> Dyn -> Dyn
         BinaryOp::Unwrap() => Ok(TypeWrapper::Concrete(AbsType::arrow(
+            Box::new(TypeWrapper::Concrete(AbsType::Sym())),
+            Box::new(TypeWrapper::Concrete(AbsType::arrow(
+                Box::new(TypeWrapper::Concrete(AbsType::Dyn())),
+                Box::new(TypeWrapper::Concrete(AbsType::arrow(
+                    Box::new(TypeWrapper::Concrete(AbsType::Dyn())),
+                    Box::new(TypeWrapper::Concrete(AbsType::Dyn())),
+                ))),
+            ))),
+        ))),
+        BinaryOp::GoField() => Ok(TypeWrapper::Concrete(AbsType::arrow(
             Box::new(TypeWrapper::Concrete(AbsType::Sym())),
             Box::new(TypeWrapper::Concrete(AbsType::arrow(
                 Box::new(TypeWrapper::Concrete(AbsType::Dyn())),
