@@ -122,7 +122,7 @@ pub mod ty_path {
                     }
                 }
             }
-            _ => panic!(),
+            (ty, next) => panic!("label::span: unexpected type {} with path element {:?}", Types(ty.clone()), next),
         }
     }
 }
