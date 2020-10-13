@@ -38,7 +38,7 @@
 
     rec_extend = fun field contr cont acc l t =>
         if hasField field t then
-            let acc = acc$[field = contr l (t.$field)] in
+            let acc = acc$[field = contr (goField field l) (t.$field)] in
             let rest = t -$ field in
             cont acc l rest
         else

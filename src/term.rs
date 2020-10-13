@@ -584,6 +584,10 @@ pub enum BinaryOp<CapturedTerm> {
     ///
     /// See `Wrap` in [`UnaryOp`](enum.UnaryOp.html).
     Unwrap(),
+    /// Go to a specific field in the type path of a label.
+    ///
+    /// See `GoDom`.
+    GoField(),
     /// Equality on booleans.
     EqBool(),
     /// Extend a record with a dynamic field.
@@ -617,6 +621,7 @@ impl<Ty> BinaryOp<Ty> {
             Plus() => Plus(),
             PlusStr() => PlusStr(),
             Unwrap() => Unwrap(),
+            GoField() => GoField(),
             EqBool() => EqBool(),
             DynRemove() => DynRemove(),
             DynAccess() => DynAccess(),

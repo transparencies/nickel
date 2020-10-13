@@ -1426,6 +1426,16 @@ pub fn get_bop_type(
                 ))),
             ))),
         ))),
+        BinaryOp::GoField() => Ok(TypeWrapper::Concrete(AbsType::arrow(
+            Box::new(TypeWrapper::Concrete(AbsType::Sym())),
+            Box::new(TypeWrapper::Concrete(AbsType::arrow(
+                Box::new(TypeWrapper::Concrete(AbsType::Dyn())),
+                Box::new(TypeWrapper::Concrete(AbsType::arrow(
+                    Box::new(TypeWrapper::Concrete(AbsType::Dyn())),
+                    Box::new(TypeWrapper::Concrete(AbsType::Dyn())),
+                ))),
+            ))),
+        ))),
         // Bool -> Bool -> Bool
         BinaryOp::EqBool() => Ok(TypeWrapper::Concrete(AbsType::arrow(
             Box::new(TypeWrapper::Concrete(AbsType::Bool())),

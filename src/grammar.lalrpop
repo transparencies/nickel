@@ -209,6 +209,7 @@ BOpIn: BinaryOp<RichTerm> = {
 
 BOpPre: BinaryOp<RichTerm> = {
     "unwrap" => BinaryOp::Unwrap(),
+    "goField" => BinaryOp::GoField(),
     "hasField" => BinaryOp::HasField(),
     "map" => BinaryOp::ListMap(),
     "elemAt" => BinaryOp::ListElemAt(),
@@ -357,6 +358,7 @@ extern {
         "polarity" => Token::Polarity,
         "goDom" => Token::GoDom,
         "goCodom" => Token::GoCodom,
+        "goField" => Token::GoField,
         "wrap" => Token::Wrap,
         "unwrap" => Token::Unwrap,
         "embed" => Token::Embed,
