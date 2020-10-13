@@ -164,6 +164,7 @@ UOp: UnaryOp<RichTerm> = {
     "isFun" => UnaryOp::IsFun(),
     "isList" => UnaryOp::IsList(),
     "isRecord" => UnaryOp::IsRecord(),
+    "isRecEmpty" => UnaryOp::IsRecEmpty(),
     "blame" => UnaryOp::Blame(),
     "chngPol" => UnaryOp::ChangePolarity(),
     "polarity" => UnaryOp::Pol(),
@@ -237,6 +238,16 @@ BaseType: Types = {
     }
 }
 
+RowTailType: Types = {
+    "type" => {
+       match <> {
+           "Dyn" => Types(AbsType::Dyn()),
+           t => panic!("unexpected row type {}", t),
+        }
+    },
+    <Ident> => Types(AbsType::Var(<>)),
+}
+
 subType : Types = {
     <BaseType>,
     <Ident> => Types(AbsType::Var(<>)),
@@ -260,7 +271,7 @@ subType : Types = {
                 |t, i| Types(AbsType::RowExtend(i, None, Box::new(t)))
             ),
     "{" "|" <r:(<Ident> ":" <Types> ",")*> <last:(<Ident> ":" <Types>)?> "|"
-    <rest: Ident?> "}" =>
+    <rest: RowTailType?> "}" =>
         r.into_iter()
             .chain(last.into_iter())
             // As we build row types as a linked list via a fold on the original
@@ -268,13 +279,10 @@ subType : Types = {
             // but it's less confusing to the user to print them in the original
             // order for error reporting.
             .rev()
-            .fold(
-                Types(
-                    match rest {
-                        Some(id) => AbsType::Var(id),
-                        None => AbsType::RowEmpty(),
-                    }
-                ),
+            .fold(match rest {
+                    Some(ty) => ty,
+                    None => Types(AbsType::RowEmpty()),
+                },
                 |t, i_ty| {
                     let (i, ty) = i_ty;
                     Types(AbsType::RowExtend(i, Some(Box::new(ty)), Box::new(t)))
@@ -343,6 +351,7 @@ extern {
         "isFun" => Token::IsFun,
         "isList" => Token::IsList,
         "isRecord" => Token::IsRecord,
+        "isRecEmpty" => Token::IsRecEmpty,
         "blame" => Token::Blame,
         "chngPol" => Token::ChangePol,
         "polarity" => Token::Polarity,

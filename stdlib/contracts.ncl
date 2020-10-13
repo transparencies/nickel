@@ -47,21 +47,21 @@
     forall_tail = fun sy pol acc l rest =>
         let magic_fld = "_%wrapped" in
         if pol == (polarity l) then
-            if rest == {} then
-                if hasField magic_fld t then
+            if hasField magic_fld rest then
+                if isRecEmpty (rest -$ magic_fld) then
                     let fail = blame (tag "polymorphic tail mismatch" l) in
-                    let inner = unwrap sy (t.$magic_fld) fail in
-                    merge t inner
+                    let inner = unwrap sy (rest.$magic_fld) fail in
+                    merge acc inner
                 else
-                    blame (tag "missing polymorphic part" l)
+                    blame (tag "extra field" l)
             else
-                blame (tag "extra field" l)
+                blame (tag "missing polymorphic part" l)
         else
-            t$[magic_fld = wrap sy rest];
+            acc$[magic_fld = wrap sy rest];
 
     dyn_tail = fun acc l rest => merge acc rest;
 
     empty_tail = fun acc l rest => 
-        if rest == {} then t
+        if isRecEmpty rest then acc
         else blame (tag "extra field" l)
 }
