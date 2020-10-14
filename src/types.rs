@@ -258,14 +258,19 @@ impl Types {
                 form(*r.clone(), h)
             }
             AbsType::StaticRecord(ref ty) => {
-                fn form(sy: &mut i32, pol: bool, ty: &Types, h: HashMap<Ident, (RichTerm, RichTerm)>) -> RichTerm {
+                fn form(
+                    sy: &mut i32,
+                    pol: bool,
+                    ty: &Types,
+                    h: HashMap<Ident, (RichTerm, RichTerm)>,
+                ) -> RichTerm {
                     match &ty.0 {
                         AbsType::RowEmpty() => RichTerm::var(String::from("empty_tail")),
                         AbsType::Dyn() => RichTerm::var(String::from("dyn_tail")),
                         AbsType::Var(id) => {
                             let (_, rt) = h
-                                    .get(&id)
-                                    .unwrap_or_else(|| panic!("Unbound type variable {:?}", id));
+                                .get(&id)
+                                .unwrap_or_else(|| panic!("Unbound type variable {:?}", id));
                             rt.clone()
                         }
                         AbsType::RowExtend(id, Some(ty), rest) => {
@@ -281,8 +286,8 @@ impl Types {
                                 ),
                                 cont,
                             )
-                       }
-                       not_row => panic!("It should be a row :/ {}", Types(not_row.clone()))
+                        }
+                        not_row => panic!("It should be a row :/ {}", Types(not_row.clone())),
                     }
                 }
 
@@ -290,7 +295,7 @@ impl Types {
                     Term::Var(Ident(String::from("record"))).into(),
                     form(sy, pol, ty, h),
                 )
-            },
+            }
             AbsType::DynRecord(_) => panic!("TODO implement"),
         }
     }

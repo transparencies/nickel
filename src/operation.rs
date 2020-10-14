@@ -168,20 +168,18 @@ fn process_unary_operation(
                 Ok(Closure::atomic_closure(Term::Bool(false).into()))
             }
         }
-        UnaryOp::IsRecord() => {
-            match *t {
-                Term::Record(_)
-                | Term::RecRecord(_) => Ok(Closure::atomic_closure(Term::Bool(true).into())),
-                _ => Ok(Closure::atomic_closure(Term::Bool(false).into()))
+        UnaryOp::IsRecord() => match *t {
+            Term::Record(_) | Term::RecRecord(_) => {
+                Ok(Closure::atomic_closure(Term::Bool(true).into()))
             }
-        }
-        UnaryOp::IsRecEmpty() => {
-            match *t {
-                Term::Record(map)
-                | Term::RecRecord(map) if map.is_empty() => Ok(Closure::atomic_closure(Term::Bool(true).into())),
-                _ => Ok(Closure::atomic_closure(Term::Bool(false).into()))
+            _ => Ok(Closure::atomic_closure(Term::Bool(false).into())),
+        },
+        UnaryOp::IsRecEmpty() => match *t {
+            Term::Record(map) | Term::RecRecord(map) if map.is_empty() => {
+                Ok(Closure::atomic_closure(Term::Bool(true).into()))
             }
-        }
+            _ => Ok(Closure::atomic_closure(Term::Bool(false).into())),
+        },
         UnaryOp::Blame() => {
             if let Term::Lbl(l) = *t {
                 Err(EvalError::BlameError(l, None))
