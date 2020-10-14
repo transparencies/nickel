@@ -36,6 +36,12 @@
         else
             blame (tag "not a record" l);
 
+    dyn_record = fun contr l t =>
+        if isRecord t then
+            mapRec (fun _field => contr l) t
+        else
+            blame (tag "not a record" l);
+
     rec_extend = fun field contr cont acc l t =>
         if hasField field t then
             let acc = acc$[field = contr (goField field l) (t.$field)] in
@@ -61,7 +67,7 @@
 
     dyn_tail = fun acc l rest => merge acc rest;
 
-    empty_tail = fun acc l rest => 
+    empty_tail = fun acc l rest =>
         if isRecEmpty rest then acc
         else blame (tag "extra field" l)
 }
