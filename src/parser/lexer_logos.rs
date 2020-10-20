@@ -1,15 +1,17 @@
 use logos::Logos;
 
-#[derive(Logos, Debug, PartialEq)]
-pub enum Token<'input> {
+#[derive(Logos, Debug, PartialEq, Clone)]
+pub enum NormalToken<'input> {
     #[regex("[ \r\t\n]+", logos::skip)]
+
+    #[error]
     Error,
 
     #[regex("_?[a-zA-Z][_a-zA-Z0-9]*")]
     Identifier(&'input str),
     #[regex("-?[0-9]+(\\.[0-9]+)?")]
-    NumLiteral(f64),
-    #[regex("[\\+@=-<>\\.|#]+")]
+    NumLiteral(&'input str),
+    #[regex("[+@=\\-<>\\.|#]+")]
     BinaryOp(&'input str),
 
     #[token("Dyn")]
@@ -22,9 +24,6 @@ pub enum Token<'input> {
     Str,
     #[token("List")]
     List,
-
-    StrLiteral(String),
-
 
     #[token("if")]
     If,
@@ -159,7 +158,7 @@ pub enum Token<'input> {
     RBrace,
     #[token("[")]
     LBracket,
-    #[token("[")]
+    #[token("]")]
     RBracket,
     #[token("(")]
     LParen,
@@ -169,4 +168,20 @@ pub enum Token<'input> {
     LAngleBracket,
     #[token(">")]
     RAngleBracket,
+}
+
+#[derive(Logos, Debug, PartialEq, Clone)]
+pub enum StringToken<'input> {
+    #[error]
+    Error,
+
+    #[regex("[^\"\\$\\\\]+")]
+    Literal(&'input str),
+
+    #[token("\"")]
+    DoubleQuote,
+    #[token("${")]
+    DollarBrace,
+    #[regex("\\\\.")]
+    EscapedChar,
 }
