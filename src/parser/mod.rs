@@ -9,4 +9,3 @@ pub mod lexer;
 #[cfg(test)]
 mod tests;
 pub mod utils;
-pub mod lexer_logos;

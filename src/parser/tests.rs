@@ -1,4 +1,4 @@
-use super::lexer::{Lexer, LexicalError, Token};
+use super::lexer::{Lexer, LexicalError, Token, NormalToken, StringToken};
 use crate::identifier::Ident;
 use crate::term::Term::*;
 use crate::term::{BinaryOp, RichTerm, UnaryOp};
@@ -7,8 +7,10 @@ use codespan::Files;
 fn parse(s: &str) -> Option<RichTerm> {
     let id = Files::new().add("<test>", String::from(s));
 
+    println!("Parsing {}", s);
     super::grammar::TermParser::new()
         .parse(id, Lexer::new(&s))
+        .map_err(|err| println!("{:?}", err))
         .ok()
 }
 
@@ -231,51 +233,51 @@ fn string_lexing() {
     assert_eq!(
         lex_without_pos("\"Good\" \"strings\""),
         Ok(vec![
-            Token::DoubleQuote,
-            Token::StrLiteral(String::from("Good")),
-            Token::DoubleQuote,
-            Token::DoubleQuote,
-            Token::StrLiteral(String::from("strings")),
-            Token::DoubleQuote,
+            Token::Normal(NormalToken::DoubleQuote),
+            Token::Str(StringToken::Literal("Good")),
+            Token::Normal(NormalToken::DoubleQuote),
+            Token::Normal(NormalToken::DoubleQuote),
+            Token::Str(StringToken::Literal("strings")),
+            Token::Normal(NormalToken::DoubleQuote),
         ])
     );
 
     assert_eq!(
         lex_without_pos("\"Good\\nEscape\\t\\\"\""),
         Ok(vec![
-            Token::DoubleQuote,
-            Token::StrLiteral(String::from("Good\nEscape\t\"")),
-            Token::DoubleQuote,
+            Token::Normal(NormalToken::DoubleQuote),
+            Token::Str(StringToken::Literal("Good\nEscape\t\"")),
+            Token::Normal(NormalToken::DoubleQuote),
         ])
     );
 
     assert_eq!(
         lex_without_pos("\"1 + ${ 1 } + 2\""),
         Ok(vec![
-            Token::DoubleQuote,
-            Token::StrLiteral(String::from("1 + ")),
-            Token::DollarBrace,
-            Token::NumLiteral(1.0),
-            Token::RBrace,
-            Token::StrLiteral(String::from(" + 2")),
-            Token::DoubleQuote,
+            Token::Normal(NormalToken::DoubleQuote),
+            Token::Str(StringToken::Literal("1 + ")),
+            Token::Str(StringToken::DollarBrace),
+            Token::Normal(NormalToken::NumLiteral(1.0)),
+            Token::Normal(NormalToken::RBrace),
+            Token::Str(StringToken::Literal(" + 2")),
+            Token::Normal(NormalToken::DoubleQuote),
         ])
     );
 
     assert_eq!(
         lex_without_pos("\"1 + ${ \"${ 1 }\" } + 2\""),
         Ok(vec![
-            Token::DoubleQuote,
-            Token::StrLiteral(String::from("1 + ")),
-            Token::DollarBrace,
-            Token::DoubleQuote,
-            Token::DollarBrace,
-            Token::NumLiteral(1.0),
-            Token::RBrace,
-            Token::DoubleQuote,
-            Token::RBrace,
-            Token::StrLiteral(String::from(" + 2")),
-            Token::DoubleQuote,
+            Token::Normal(NormalToken::DoubleQuote),
+            Token::Str(StringToken::Literal("1 + ")),
+            Token::Str(StringToken::DollarBrace),
+            Token::Normal(NormalToken::DoubleQuote),
+            Token::Str(StringToken::DollarBrace),
+            Token::Normal(NormalToken::NumLiteral(1.0)),
+            Token::Normal(NormalToken::RBrace),
+            Token::Normal(NormalToken::DoubleQuote),
+            Token::Normal(NormalToken::RBrace),
+            Token::Str(StringToken::Literal(" + 2")),
+            Token::Normal(NormalToken::DoubleQuote),
         ])
     );
 }
