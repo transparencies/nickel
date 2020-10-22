@@ -126,15 +126,12 @@ Bool: bool = {
     "false" => false,
 };
 
-StrChunks : RichTerm = {
-    "\"" <chunk: ChunkLiteral> "\"" => RichTerm::new(Term::Str(<>)),
-    "\"" <chunks: ChunkExpr+> "\"" => {
-        let mut chunks_mut = chunks;
-        chunks_mut.reverse();
-        RichTerm::new(Term::StrChunks(chunks_mut))
-    },
-    "\"" <fst: ChunkLiteral?> <chunks: (ChunkExpr+ChunkLiteral)+> "\"" => {
-        let chunks = fst.into_iter()
+StrChunks : RichTerm =
+  "\"" <fst: ChunkLiteral?> <chunks: (ChunkExpr+ChunkLiteral)*> <lasts:
+    ChunkExpr*> "\"" => {
+        /* println!("Rule StrChunks: fst = {:?}", fst); */
+        /* println!("chunks = {:?}", chunks); */
+        let chunks: Vec<StrChunk<RichTerm>> = fst.into_iter()
             .map(StrChunk::Literal)
             .chain(chunks.into_iter()
                 .map(|(mut es, s)| {
@@ -142,10 +139,12 @@ StrChunks : RichTerm = {
                     es
                 })
                 .flatten())
-            .rev();
-        RichTerm::new(Term::StrChunks(chunks.collect()))
-    },
-};
+            .chain(lasts.into_iter())
+            .rev()
+            .collect();
+
+        RichTerm::new(Term::StrChunks(chunks))
+    };
 
 ChunkLiteral: String = 
     <parts: ChunkLiteralPart+> => {
@@ -368,6 +367,7 @@ extern {
         "head" => Token::Normal(NormalToken::Head),
         "tail" => Token::Normal(NormalToken::Tail),
         "length" => Token::Normal(NormalToken::Length),
+        "fieldsOf" => Token::Normal(NormalToken::FieldsOf),
 
         "hasField" => Token::Normal(NormalToken::HasField),
         "map" => Token::Normal(NormalToken::Map),

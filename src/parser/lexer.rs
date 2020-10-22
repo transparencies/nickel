@@ -1,9 +1,40 @@
+//! The lexer, transforming an input string to a stream of tokens.
+//!
+//! A modal lexer is implemented on top of two standard
+//! [logos](https://github.com/maciejhirsz/logos) lexers in order to support arbitrary interpolated
+//! expressions, which is not possible using LALRPOP's generated lexer. To see why, consider the
+//! following string:
+//!
+//! ```
+//! "hello, I have 1 + ${ {a = "40"}.a } + 1 bananas."
+//! ```
+//!
+//! Once the `${` token is encountered, the lexer has to switch back to lexing expressions as
+//! usual. But at the end of the interpolated expression, `+ 1 bananas.` needs to be parsed as a
+//! string again, and not as normal program tokens. Since the interpolated expression is arbitrary,
+//! it can contains nested `{` and `}` (as here, with records) and strings which themselves have
+//! interpolated expression, and so on.
+//!
+//! This is typically not lexable using only regular expressions. To handle this, we use a *modal*
+//! lexer. As hinted by the name, a modal lexer have several modes in which the same tokens can be
+//! parsed differently. Ours can be in *normal* mode or in *string* mode.
+//!
+//! It also maintains a stack of brace counters, required inside an interpolated expression to
+//! decide if a closing brace `}` belongs to the expression or is actually the closing brace of the
+//! interpolated expression, indicating that we should switch back to string mode.
+//!
+//! When entering a string, the `Str` mode is entered. When a `${` is encountered in a string,
+//! starting an interpolated expression, the normal mode is pushed. At each starting `{` in normal
+//! mode, the brace counter is incremented. At each closing '}', it is decremented. When it reaches
+//! `0`, this is the end of the current interpolated expressions, and we leave the normal mode and
+//! go back to string mode. In our example, this is the second `}`: at this point, the lexer knows
+//! that the coming characters must be lexed as string tokens, and not as normal tokens.
 use logos::Logos;
 
+/// The tokens in normal mode.
 #[derive(Logos, Debug, PartialEq, Clone)]
 pub enum NormalToken<'input> {
     #[regex("[ \r\t\n]+", logos::skip)]
-
     #[error]
     Error,
 
@@ -140,6 +171,7 @@ pub enum NormalToken<'input> {
     Tail,
     #[token("length")]
     Length,
+    #[token("fieldsOf")]
     FieldsOf,
 
     #[token("unwrap")]
@@ -171,12 +203,13 @@ pub enum NormalToken<'input> {
     RAngleBracket,
 }
 
+/// The tokens in string mode.
 #[derive(Logos, Debug, PartialEq, Clone)]
 pub enum StringToken<'input> {
     #[error]
     Error,
 
-    #[regex("(([^\"\\$\\\\]+)|\\$[^{\"\\$\\\\])+\\$?")]
+    #[regex("[^\"$\\\\]+")]
     Literal(&'input str),
 
     #[token("\"")]
@@ -187,6 +220,7 @@ pub enum StringToken<'input> {
     EscapedChar(char),
 }
 
+/// The tokens of the modal lexer.
 #[derive(Debug, PartialEq, Clone)]
 pub enum Token<'input> {
     Normal(NormalToken<'input>),
@@ -198,6 +232,7 @@ pub enum ModalLexer<'input> {
     Str(logos::Lexer<'input, StringToken<'input>>),
 }
 
+// Wrap the `next()` function of the underlying lexer.
 impl<'input> Iterator for ModalLexer<'input> {
     type Item = Token<'input>;
 
@@ -209,6 +244,7 @@ impl<'input> Iterator for ModalLexer<'input> {
     }
 }
 
+// Wrap the `span()` function of the underlying lexer.
 impl<'input> ModalLexer<'input> {
     pub fn span(&self) -> std::ops::Range<usize> {
         match self {
@@ -229,8 +265,24 @@ pub enum LexicalError {
 }
 
 pub struct Lexer<'input> {
+    // We are forced to use an `Option` in order to be able to switch mode without cloning the
+    // underlying lexer. Logos offers a `morph()` function for a in-place conversion between
+    // lexers, that we want to use to transform a normal mode lexer to a string mode lexer. But
+    // Rust's borrowing system won't let us take ownership of the underlying lexer without
+    // replacing it first by something else, whence the `Option`. `lexer` should never be none
+    // excepted in an non observable intermediate state during mode switching.
+    /// The modal lexer.
     pub lexer: Option<ModalLexer<'input>>,
+    /// The current brace counter used to determine if a closing brace is the end of an
+    /// interpolated expression.
+    ///
+    /// This is always `0` in string mode.
     pub brace_count: usize,
+    /// The stack of brace counters.
+    ///
+    /// As interpolated strings can be nested, we can start to lex a new string while we were
+    /// already inside an interpolated expression. In this case, once this string ends, we must
+    /// restore the original brace counter, which is what this stack is used for.
     pub brace_stack: Vec<usize>,
 }
 
@@ -244,6 +296,7 @@ impl<'input> Lexer<'input> {
     }
 
     fn enter_str(&mut self) {
+        println!("enter_str({:?}, {})", self.brace_stack, self.brace_count);
         match self.lexer.take() {
             Some(ModalLexer::Normal(lexer)) => {
                 self.brace_stack.push(self.brace_count);
@@ -255,6 +308,7 @@ impl<'input> Lexer<'input> {
     }
 
     fn enter_normal(&mut self) {
+        println!("enter_normal({:?}, {})", self.brace_stack, self.brace_count);
         match self.lexer.take() {
             Some(ModalLexer::Str(lexer)) => {
                 //brace_count must be zero, and we do not push it on the stack
@@ -265,6 +319,7 @@ impl<'input> Lexer<'input> {
     }
 
     fn leave_str(&mut self) {
+        println!("leave_str({:?}, {})", self.brace_stack, self.brace_count);
         match self.lexer.take() {
             Some(ModalLexer::Str(lexer)) => {
                 // We can only enter string mode from normal mode, so the brace stack should not be
@@ -277,10 +332,11 @@ impl<'input> Lexer<'input> {
     }
 
     fn leave_normal(&mut self) {
+        println!("leave_normal({:?}, {})", self.brace_stack, self.brace_count);
         match self.lexer.take() {
             Some(ModalLexer::Normal(lexer)) => {
                 // brace_count must be 0
-                self.lexer.replace(ModalLexer::Normal(lexer.morph()));
+                self.lexer.replace(ModalLexer::Str(lexer.morph()));
             }
             _ => panic!("lexer::leave_normal"),
         }
@@ -305,6 +361,7 @@ impl<'input> Iterator for Lexer<'input> {
                     if self.brace_stack.is_empty() {
                         return Some(Err(LexicalError::UnmatchedCloseBrace(span.start)));
                     }
+
                     self.leave_normal();
                 }
                 else {
@@ -314,12 +371,11 @@ impl<'input> Iterator for Lexer<'input> {
             Some(Str(StringToken::DoubleQuote)) => {
                 self.leave_str();
                 // To make things simpler on the parser side, we only return one variant for
-                // DoubleQuote, namely the the normal one 
+                // `DoubleQuote`, namely the the normal one. 
                 token = Some(Normal(NormalToken::DoubleQuote));
             }
-            Some(Str(StringToken::DollarBrace)) =>
-                self.enter_normal(),
-            // Convert escape sequences
+            Some(Str(StringToken::DollarBrace)) => self.enter_normal(),
+            // Convert escape sequences to the corresponding character.
             Some(Str(StringToken::EscapedChar(c))) => {
                 if let Some(esc) = escape_char(*c) {
                     token = Some(Str(StringToken::EscapedChar(esc)));
@@ -347,6 +403,6 @@ fn escape_char(chr: char) -> Option<char> {
         'n' => Some('\n'),
         'r' => Some('\r'),
         't' => Some('\t'),
-        _ => { println!("WTF {}", chr); None} ,
+        _ => None,
     }
 }

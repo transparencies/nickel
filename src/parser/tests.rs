@@ -1,7 +1,7 @@
 use super::lexer::{Lexer, LexicalError, Token, NormalToken, StringToken};
 use crate::identifier::Ident;
 use crate::term::Term::*;
-use crate::term::{BinaryOp, RichTerm, UnaryOp};
+use crate::term::{BinaryOp, RichTerm, UnaryOp, StrChunk};
 use codespan::Files;
 
 fn parse(s: &str) -> Option<RichTerm> {
@@ -28,6 +28,11 @@ fn lex_without_pos(s: &str) -> Result<Vec<Token>, LexicalError> {
     lex(s).map(|v| v.into_iter().map(|(_, tok, _)| tok).collect())
 }
 
+/// Wrap a single string literal in a `StrChunks`.
+fn mk_single_chunk(s: &str) -> RichTerm {
+    StrChunks(vec![StrChunk::Literal(String::from(s))]).into()
+}
+
 #[test]
 fn numbers() {
     assert_eq!(parse_without_pos("22"), Num(22.0).into());
@@ -41,26 +46,26 @@ fn numbers() {
 fn strings() {
     assert_eq!(
         parse_without_pos("\"hello world\""),
-        Str("hello world".to_string()).into()
+        mk_single_chunk("hello world"),
     );
     assert_eq!(
         parse_without_pos("\"hello \nworld\""),
-        Str("hello \nworld".to_string()).into()
+        mk_single_chunk("hello \nworld")
     );
     assert_eq!(
         parse_without_pos("\"hello Dimension C-132!\""),
-        Str("hello Dimension C-132!".to_string()).into()
+        mk_single_chunk("hello Dimension C-132!")
     );
 
     assert_eq!(
         parse_without_pos("\"hello\" ++ \"World\" ++ \"!!\" "),
         Op2(
             BinaryOp::PlusStr(),
-            Str("hello".to_string()).into(),
+            mk_single_chunk("hello"),
             Op2(
                 BinaryOp::PlusStr(),
-                Str("World".to_string()).into(),
-                Str("!!".to_string()).into()
+                mk_single_chunk("World"),
+                mk_single_chunk("!!")
             )
             .into()
         )
@@ -246,7 +251,11 @@ fn string_lexing() {
         lex_without_pos("\"Good\\nEscape\\t\\\"\""),
         Ok(vec![
             Token::Normal(NormalToken::DoubleQuote),
-            Token::Str(StringToken::Literal("Good\nEscape\t\"")),
+            Token::Str(StringToken::Literal("Good")),
+            Token::Str(StringToken::EscapedChar('\n')),
+            Token::Str(StringToken::Literal("Escape")),
+            Token::Str(StringToken::EscapedChar('\t')),
+            Token::Str(StringToken::EscapedChar('\"')),
             Token::Normal(NormalToken::DoubleQuote),
         ])
     );
@@ -287,10 +296,10 @@ fn str_escape() {
     assert!(parse("\"bad escape \\g\"").is_none());
     assert_eq!(
         parse_without_pos(r#""str\twith\nescapes""#),
-        Str(String::from("str\twith\nescapes")).into(),
+        mk_single_chunk("str\twith\nescapes"),
     );
     assert_eq!(
-        parse_without_pos(r#""\$\${ }$""#),
-        Str(String::from("$${ }$")).into(),
+        parse_without_pos(r#""\$\${ }\$""#),
+        mk_single_chunk("$${ }$"),
     );
 }
