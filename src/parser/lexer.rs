@@ -100,7 +100,7 @@ pub enum NormalToken<'input> {
     DoubleQuote,
     #[token("-$")]
     MinusDollar,
-    
+
     #[token("fun")]
     Fun,
     #[token("import")]
@@ -363,15 +363,14 @@ impl<'input> Iterator for Lexer<'input> {
                     }
 
                     self.leave_normal();
-                }
-                else {
+                } else {
                     self.brace_count -= 1;
                 }
-            },
+            }
             Some(Str(StringToken::DoubleQuote)) => {
                 self.leave_str();
                 // To make things simpler on the parser side, we only return one variant for
-                // `DoubleQuote`, namely the the normal one. 
+                // `DoubleQuote`, namely the the normal one.
                 token = Some(Normal(NormalToken::DoubleQuote));
             }
             Some(Str(StringToken::DollarBrace)) => self.enter_normal(),
@@ -379,17 +378,17 @@ impl<'input> Iterator for Lexer<'input> {
             Some(Str(StringToken::EscapedChar(c))) => {
                 if let Some(esc) = escape_char(*c) {
                     token = Some(Str(StringToken::EscapedChar(esc)));
-                }
-                else {
-                    return Some(Err(LexicalError::InvalidEscapeSequence(span.end)))
+                } else {
+                    return Some(Err(LexicalError::InvalidEscapeSequence(span.end)));
                 }
             }
             // Early report errors for now. This could change in the future
-            Some(Str(StringToken::Error)) | Some(Normal(NormalToken::Error)) =>
-                return Some(Err(LexicalError::Generic(span.start, span.end))),
+            Some(Str(StringToken::Error)) | Some(Normal(NormalToken::Error)) => {
+                return Some(Err(LexicalError::Generic(span.start, span.end)))
+            }
             _ => (),
         }
-        
+
         token.map(|t| Ok((span.start, t, span.end)))
     }
 }

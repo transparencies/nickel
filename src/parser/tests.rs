@@ -1,7 +1,7 @@
-use super::lexer::{Lexer, LexicalError, Token, NormalToken, StringToken};
+use super::lexer::{Lexer, LexicalError, NormalToken, StringToken, Token};
 use crate::identifier::Ident;
 use crate::term::Term::*;
-use crate::term::{BinaryOp, RichTerm, UnaryOp, StrChunk};
+use crate::term::{BinaryOp, RichTerm, StrChunk, UnaryOp};
 use codespan::Files;
 
 fn parse(s: &str) -> Option<RichTerm> {
