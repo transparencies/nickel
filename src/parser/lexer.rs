@@ -296,7 +296,6 @@ impl<'input> Lexer<'input> {
     }
 
     fn enter_str(&mut self) {
-        println!("enter_str({:?}, {})", self.brace_stack, self.brace_count);
         match self.lexer.take() {
             Some(ModalLexer::Normal(lexer)) => {
                 self.brace_stack.push(self.brace_count);
@@ -308,7 +307,6 @@ impl<'input> Lexer<'input> {
     }
 
     fn enter_normal(&mut self) {
-        println!("enter_normal({:?}, {})", self.brace_stack, self.brace_count);
         match self.lexer.take() {
             Some(ModalLexer::Str(lexer)) => {
                 //brace_count must be zero, and we do not push it on the stack
@@ -319,7 +317,6 @@ impl<'input> Lexer<'input> {
     }
 
     fn leave_str(&mut self) {
-        println!("leave_str({:?}, {})", self.brace_stack, self.brace_count);
         match self.lexer.take() {
             Some(ModalLexer::Str(lexer)) => {
                 // We can only enter string mode from normal mode, so the brace stack should not be
@@ -332,7 +329,6 @@ impl<'input> Lexer<'input> {
     }
 
     fn leave_normal(&mut self) {
-        println!("leave_normal({:?}, {})", self.brace_stack, self.brace_count);
         match self.lexer.take() {
             Some(ModalLexer::Normal(lexer)) => {
                 // brace_count must be 0
