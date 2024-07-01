@@ -2,10 +2,12 @@ use std::fmt;
 
 use crate::identifier::LocIdent;
 use crate::parser::lexer::KEYWORDS;
-use crate::term::pattern::{EnumPattern, Pattern, PatternData, RecordPattern, RecordPatternTail};
-use crate::term::record::RecordData;
 use crate::term::{
-    record::{Field, FieldMetadata},
+    pattern::*,
+    record::{Field, FieldMetadata, RecordData},
+    // Because we use `Term::*`, we need to differentiate `Contract` from `Term::Contract`, so we
+    // alias the latter
+    CustomContract as ContractNode,
     *,
 };
 use crate::typ::*;
@@ -58,7 +60,7 @@ fn escape(s: &str) -> String {
         .replace('\r', "\\r")
 }
 
-static QUOTING_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new("^_?[a-zA-Z][_a-zA-Z0-9-]*$").unwrap());
+static QUOTING_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new("^_*[a-zA-Z][_a-zA-Z0-9-]*$").unwrap());
 
 /// Return the string representation of an identifier, and add enclosing double quotes if the
 /// label isn't a valid identifier according to the parser, for example if it contains a
@@ -140,9 +142,10 @@ fn needs_parens_in_type_pos(typ: &Type) -> bool {
             term.as_ref(),
             Term::Fun(..)
                 | Term::FunPattern(..)
+                | Term::CustomContract(_)
                 | Term::Let(..)
                 | Term::LetPattern(..)
-                | Term::Op1(UnaryOp::Ite(), _)
+                | Term::Op1(UnaryOp::IfThenElse, _)
                 | Term::Import(..)
                 | Term::ResolvedImport(..)
         )
@@ -250,6 +253,43 @@ where
             .append(line_maybe)
             .double_quotes()
             .enclose(start_delimiter, end_delimiter)
+    }
+
+    /// Print a function, which can have several parameters (represented as nested functions), and
+    /// where each layer might be a normal function, a pattern matching function or a custom
+    /// contract. [function] automatically unwrap any of those nested layers to print the function
+    /// with as many parameters as possible on the left of the `=>` separator.
+    fn function(
+        &'a self,
+        first_param: impl Pretty<'a, Self, A>,
+        mut body: &RichTerm,
+    ) -> DocBuilder<'a, Self, A> {
+        let mut builder = docs![self, "fun", self.line(), first_param];
+
+        loop {
+            match body.as_ref() {
+                Term::Fun(id, rt) => {
+                    builder = docs![self, builder, self.line(), self.as_string(id)];
+                    body = rt;
+                }
+                Term::FunPattern(pat, rt) => {
+                    builder = docs![self, builder, self.line(), self.pat_with_parens(pat)];
+                    body = rt;
+                }
+                _ => break,
+            }
+        }
+
+        docs![
+            self,
+            builder,
+            self.line(),
+            "=>",
+            self.line(),
+            body.pretty(self)
+        ]
+        .nest(2)
+        .group()
     }
 
     fn field_metadata(
@@ -401,19 +441,19 @@ where
         typ.pretty(self).parens_if(needs_parens_in_type_pos(typ))
     }
 
-    /// Pretty printing of a restricted patterns that requires enum variant patterns to be
-    /// parenthesized (typically function pattern arguments). The only difference with a general
-    /// pattern is that for a function, a top-level enum variant pattern with an enum tag as an
-    /// argument such as `'Foo 'Bar` must be parenthesized, because `fun 'Foo 'Bar => ...` is
-    /// parsed as a function of two arguments, which are bare enum tags `'Foo` and `'Bar`. We must
-    /// print `fun ('Foo 'Bar) => ..` instead.
+    /// Pretty printing of a restricted patterns that requires enum variant patterns and or
+    /// patterns to be parenthesized (typically function pattern arguments). The only difference
+    /// with a general pattern is that for a function, a top-level enum variant pattern with an
+    /// enum tag as an argument such as `'Foo 'Bar` must be parenthesized, because `fun 'Foo 'Bar
+    /// => ...` is parsed as a function of two arguments, which are bare enum tags `'Foo` and
+    /// `'Bar`. We must print `fun ('Foo 'Bar) => ..` instead.
     fn pat_with_parens(&'a self, pattern: &Pattern) -> DocBuilder<'a, Self, A> {
         pattern.pretty(self).parens_if(matches!(
             pattern.data,
             PatternData::Enum(EnumPattern {
                 pattern: Some(_),
                 ..
-            })
+            }) | PatternData::Or(_)
         ))
     }
 }
@@ -491,8 +531,8 @@ where
     fn pretty(self, allocator: &'a D) -> DocBuilder<'a, D, A> {
         use UnaryOp::*;
         match self {
-            BoolNot() => allocator.text("!"),
-            BoolAnd() | BoolOr() | StaticAccess(_) => {
+            BoolNot => allocator.text("!"),
+            BoolAnd | BoolOr | RecordAccess(_) => {
                 unreachable!(
                     "These are handled specially since they are actually encodings \
                     of binary operators (`BoolAnd` and `BoolOr`) or need special \
@@ -500,9 +540,9 @@ where
                     branch of `Term::pretty`"
                 )
             }
-            Embed(id) => docs![
+            EnumEmbed(id) => docs![
                 allocator,
-                "%embed%",
+                "%enum/embed%",
                 docs![allocator, allocator.line(), id.to_string()].nest(2)
             ],
             op => allocator.text(format!("%{op}%")).append(allocator.space()),
@@ -519,25 +559,25 @@ where
     fn pretty(self, allocator: &'a D) -> DocBuilder<'a, D, A> {
         use BinaryOp::*;
         match self {
-            Plus() => allocator.text("+"),
-            Sub() => allocator.text("-"),
+            Plus => allocator.text("+"),
+            Sub => allocator.text("-"),
 
-            Mult() => allocator.text("*"),
-            Div() => allocator.text("/"),
-            Modulo() => allocator.text("%"),
+            Mult => allocator.text("*"),
+            Div => allocator.text("/"),
+            Modulo => allocator.text("%"),
 
-            Eq() => allocator.text("=="),
-            LessThan() => allocator.text("<"),
-            GreaterThan() => allocator.text(">"),
-            GreaterOrEq() => allocator.text(">="),
-            LessOrEq() => allocator.text("<="),
+            Eq => allocator.text("=="),
+            LessThan => allocator.text("<"),
+            GreaterThan => allocator.text(">"),
+            GreaterOrEq => allocator.text(">="),
+            LessOrEq => allocator.text("<="),
 
             Merge(_) => allocator.text("&"),
 
-            StrConcat() => allocator.text("++"),
-            ArrayConcat() => allocator.text("@"),
+            StringConcat => allocator.text("++"),
+            ArrayConcat => allocator.text("@"),
 
-            DynAccess() => allocator.text("."),
+            RecordGet => allocator.text("."),
 
             op => allocator.as_string(format!("%{op}%")),
         }
@@ -586,9 +626,40 @@ where
 {
     fn pretty(self, allocator: &'a D) -> DocBuilder<'a, D, A> {
         match self {
+            PatternData::Wildcard => allocator.text("_"),
             PatternData::Any(id) => allocator.as_string(id),
             PatternData::Record(rp) => rp.pretty(allocator),
+            PatternData::Array(ap) => ap.pretty(allocator),
             PatternData::Enum(evp) => evp.pretty(allocator),
+            PatternData::Constant(cp) => cp.pretty(allocator),
+            PatternData::Or(op) => op.pretty(allocator),
+        }
+    }
+}
+
+impl<'a, D, A> Pretty<'a, D, A> for &ConstantPattern
+where
+    D: NickelAllocatorExt<'a, A>,
+    D::Doc: Clone,
+    A: Clone + 'a,
+{
+    fn pretty(self, allocator: &'a D) -> DocBuilder<'a, D, A> {
+        self.data.pretty(allocator)
+    }
+}
+
+impl<'a, D, A> Pretty<'a, D, A> for &ConstantPatternData
+where
+    D: NickelAllocatorExt<'a, A>,
+    D::Doc: Clone,
+    A: Clone + 'a,
+{
+    fn pretty(self, allocator: &'a D) -> DocBuilder<'a, D, A> {
+        match self {
+            ConstantPatternData::Bool(b) => allocator.as_string(b),
+            ConstantPatternData::Number(n) => allocator.as_string(format!("{}", n.to_sci())),
+            ConstantPatternData::String(s) => allocator.escaped_string(s).double_quotes(),
+            ConstantPatternData::Null => allocator.text("null"),
         }
     }
 }
@@ -660,15 +731,65 @@ where
                 allocator.line()
             ),
             match tail {
-                RecordPatternTail::Empty => allocator.nil(),
-                RecordPatternTail::Open => docs![allocator, allocator.line(), ".."],
-                RecordPatternTail::Capture(id) =>
+                TailPattern::Empty => allocator.nil(),
+                TailPattern::Open => docs![allocator, allocator.line(), ".."],
+                TailPattern::Capture(id) =>
                     docs![allocator, allocator.line(), "..", id.ident().to_string()],
             },
         ]
         .nest(2)
         .append(allocator.line())
         .braces()
+        .group()
+    }
+}
+
+impl<'a, D, A> Pretty<'a, D, A> for &ArrayPattern
+where
+    D: NickelAllocatorExt<'a, A>,
+    D::Doc: Clone,
+    A: Clone + 'a,
+{
+    fn pretty(self, allocator: &'a D) -> DocBuilder<'a, D, A> {
+        docs![
+            allocator,
+            allocator.intersperse(
+                self.patterns.iter(),
+                docs![allocator, ",", allocator.line()],
+            ),
+            if !self.patterns.is_empty() && self.is_open() {
+                docs![allocator, ",", allocator.line()]
+            } else {
+                allocator.nil()
+            },
+            match self.tail {
+                TailPattern::Empty => allocator.nil(),
+                TailPattern::Open => allocator.text(".."),
+                TailPattern::Capture(id) => docs![allocator, "..", id.ident().to_string()],
+            },
+        ]
+        .nest(2)
+        .brackets()
+        .group()
+    }
+}
+
+impl<'a, D, A> Pretty<'a, D, A> for &OrPattern
+where
+    D: NickelAllocatorExt<'a, A>,
+    D::Doc: Clone,
+    A: Clone + 'a,
+{
+    fn pretty(self, allocator: &'a D) -> DocBuilder<'a, D, A> {
+        docs![
+            allocator,
+            allocator.intersperse(
+                self.patterns
+                    .iter()
+                    .map(|pat| allocator.pat_with_parens(pat)),
+                docs![allocator, allocator.line(), "or", allocator.space()],
+            ),
+        ]
         .group()
     }
 }
@@ -699,49 +820,29 @@ where
             Num(n) => allocator.as_string(format!("{}", n.to_sci())),
             Str(v) => allocator.escaped_string(v).double_quotes(),
             StrChunks(chunks) => allocator.chunks(chunks, StringRenderStyle::Multiline),
-            Fun(id, rt) => {
-                let mut params = vec![id];
-                let mut rt = rt;
-                while let Fun(id, t) = rt.as_ref() {
-                    params.push(id);
-                    rt = t
-                }
+            Fun(id, body) => allocator.function(allocator.as_string(id), body),
+            // Format this as the primop application `<custom contract constructor> <contract impl>`.
+            CustomContract(contract_node) => {
+                let (constructor, contract) = match contract_node {
+                    ContractNode::Predicate(p) => ("%contract/from_predicate%", p),
+                    ContractNode::Validator(v) => ("%contract/from_validator%", v),
+                    ContractNode::PartialIdentity(pid) => ("%contract/custom%", pid),
+                };
+
                 docs![
                     allocator,
-                    "fun",
-                    allocator.line(),
-                    allocator.intersperse(
-                        params.iter().map(|p| allocator.as_string(p)),
-                        allocator.line()
-                    ),
-                    allocator.line(),
-                    "=>",
-                    allocator.line(),
-                    rt
+                    constructor,
+                    docs![
+                        allocator,
+                        allocator.line(),
+                        contract.pretty(allocator).parens()
+                    ]
+                    .nest(2)
+                    .group()
                 ]
-                .nest(2)
-                .group()
             }
-            FunPattern(..) => {
-                let mut params = vec![];
-                let mut rt = self;
-                while let FunPattern(pat, t) = rt {
-                    params.push(allocator.pat_with_parens(pat));
-                    rt = t.as_ref();
-                }
-                docs![
-                    allocator,
-                    "fun",
-                    allocator.line(),
-                    allocator.intersperse(params, allocator.line()),
-                    allocator.line(),
-                    "=>",
-                    allocator.line(),
-                    rt
-                ]
-                .nest(2)
-                .group()
-            }
+            FunPattern(pat, body) => allocator.function(allocator.pat_with_parens(pat), body),
+            // Format this as the application `std.contract.from_predicate <pred>`.
             Lbl(_lbl) => allocator.text("%<label>").append(allocator.line()),
             Let(id, rt, body, attrs) => docs![
                 allocator,
@@ -795,28 +896,29 @@ where
             .append(body.pretty(allocator).nest(2))
             .group(),
             App(rt1, rt2) => match rt1.as_ref() {
-                App(iop, t) if matches!(iop.as_ref(), Op1(UnaryOp::Ite(), _)) => match iop.as_ref()
-                {
-                    Op1(UnaryOp::Ite(), i) => docs![
-                        allocator,
-                        "if ",
-                        i,
-                        " then",
-                        docs![allocator, allocator.line(), t].nest(2),
-                        allocator.line(),
-                        "else",
-                        docs![allocator, allocator.line(), rt2].nest(2)
-                    ]
-                    .group(),
-                    _ => unreachable!(),
-                },
-                Op1(op @ (UnaryOp::BoolAnd() | UnaryOp::BoolOr()), rt1) => docs![
+                App(iop, t) if matches!(iop.as_ref(), Op1(UnaryOp::IfThenElse, _)) => {
+                    match iop.as_ref() {
+                        Op1(UnaryOp::IfThenElse, i) => docs![
+                            allocator,
+                            "if ",
+                            i,
+                            " then",
+                            docs![allocator, allocator.line(), t].nest(2),
+                            allocator.line(),
+                            "else",
+                            docs![allocator, allocator.line(), rt2].nest(2)
+                        ]
+                        .group(),
+                        _ => unreachable!(),
+                    }
+                }
+                Op1(op @ (UnaryOp::BoolAnd | UnaryOp::BoolOr), rt1) => docs![
                     allocator,
                     allocator.atom(rt1),
                     allocator.line(),
                     match op {
-                        UnaryOp::BoolAnd() => "&& ",
-                        UnaryOp::BoolOr() => "|| ",
+                        UnaryOp::BoolAnd => "&& ",
+                        UnaryOp::BoolOr => "|| ",
                         _ => unreachable!(),
                     },
                     allocator.atom(rt2)
@@ -856,21 +958,12 @@ where
                     allocator,
                     allocator.line(),
                     allocator.intersperse(
-                        data.branches
-                            .iter()
-                            .map(|(pat, t)| (pat.pretty(allocator), t))
-                            .chain(data.default.iter().map(|d| (allocator.text("_"), d)))
-                            .map(|(lhs, t)| docs![
-                                allocator,
-                                lhs,
-                                allocator.space(),
-                                "=>",
-                                allocator.line(),
-                                t,
-                                ","
-                            ]
-                            .nest(2)),
-                        allocator.line()
+                        data.branches.iter().map(|branch| docs![
+                            allocator,
+                            branch.pretty(allocator),
+                            ","
+                        ]),
+                        allocator.line(),
                     ),
                 ]
                 .nest(2)
@@ -896,12 +989,12 @@ where
                 .group()
             }
 
-            Op1(UnaryOp::StaticAccess(id), rt) => {
+            Op1(UnaryOp::RecordAccess(id), rt) => {
                 docs![allocator, allocator.atom(rt), ".", ident_quoted(id)]
             }
-            Op1(UnaryOp::BoolNot(), rt) => docs![allocator, "!", allocator.atom(rt)],
+            Op1(UnaryOp::BoolNot, rt) => docs![allocator, "!", allocator.atom(rt)],
 
-            Op1(UnaryOp::BoolAnd() | UnaryOp::BoolOr() | UnaryOp::Ite(), _) => unreachable!(),
+            Op1(UnaryOp::BoolAnd | UnaryOp::BoolOr | UnaryOp::IfThenElse, _) => unreachable!(),
             Op1(op, rt) => match op.pos() {
                 OpPos::Prefix => docs![
                     allocator,
@@ -913,12 +1006,12 @@ where
                     panic!("pretty print is not implemented for {op:?}")
                 }
             },
-            Op2(BinaryOp::DynAccess(), rtl, rtr) => {
+            Op2(BinaryOp::RecordGet, rtl, rtr) => {
                 docs![allocator, rtr, ".", rtl]
             }
             Op2(op, rtl, rtr) => docs![
                 allocator,
-                if (&BinaryOp::Sub(), &Num(Number::ZERO)) == (op, rtl.as_ref()) {
+                if (&BinaryOp::Sub, &Num(Number::ZERO)) == (op, rtl.as_ref()) {
                     allocator.text("-")
                 } else if op.pos() == OpPos::Prefix {
                     op.pretty(allocator).append(
@@ -948,6 +1041,7 @@ where
                 .nest(2)
             ]
             .group(),
+            ForeignId(_) => allocator.text("%<foreign>"),
             SealingKey(sym) => allocator.text(format!("%<sealing key: {sym}>")),
             Sealed(_i, _rt, _lbl) => allocator.text("%<sealed>"),
             Annotated(annot, rt) => allocator.atom(rt).append(annot.pretty(allocator)),
@@ -1083,6 +1177,7 @@ where
                 ]
             }
             .group(),
+            ForeignId => allocator.text("ForeignId"),
             Symbol => allocator.text("Symbol"),
             Flat(t) => t.pretty(allocator),
             Var(var) => allocator.as_string(var),
@@ -1155,6 +1250,30 @@ where
             .group(),
             Wildcard(_) => allocator.text("_"),
         }
+    }
+}
+
+impl<'a, D, A> Pretty<'a, D, A> for &MatchBranch
+where
+    D: NickelAllocatorExt<'a, A>,
+    D::Doc: Clone,
+    A: Clone + 'a,
+{
+    fn pretty(self, allocator: &'a D) -> DocBuilder<'a, D, A> {
+        let guard = if let Some(guard) = &self.guard {
+            docs![allocator, allocator.line(), "if", allocator.space(), guard]
+        } else {
+            allocator.nil()
+        };
+
+        docs![
+            allocator,
+            &self.pattern,
+            guard,
+            allocator.space(),
+            "=>",
+            docs![allocator, allocator.line(), self.body.pretty(allocator),].nest(2),
+        ]
     }
 }
 
@@ -1339,9 +1458,9 @@ mod tests {
     #[test]
     fn pretty_opn() {
         assert_long_short_term(
-            "%str_replace% string pattern replace",
+            "%string/replace% string pattern replace",
             indoc! {"
-                %str_replace%
+                %string/replace%
                   string
                   pattern
                   replace"
@@ -1359,9 +1478,9 @@ mod tests {
             },
         );
         assert_long_short_term(
-            "%str_split% string sep",
+            "%string/split% string sep",
             indoc! {"
-                %str_split%
+                %string/split%
                   string
                   sep"
             },
@@ -1411,9 +1530,9 @@ mod tests {
             },
         );
         assert_long_short_term(
-            "%embed% foo bar",
+            "%enum/embed% foo bar",
             indoc! {"
-                %embed%
+                %enum/embed%
                   foo
                   bar"
             },

@@ -245,7 +245,7 @@ UniTerm: UniTerm = {
         UniTerm::from(rt)
     },
     "if" <cond: Term> "then" <t1: Term> "else" <t2: Term> =>
-        UniTerm::from(mk_app!(Term::Op1(UnaryOp::Ite(), cond), t1, t2)),
+        UniTerm::from(mk_app!(Term::Op1(UnaryOp::IfThenElse, cond), t1, t2)),
     <err: Error> => {
         UniTerm::from(err)
     },
@@ -307,28 +307,14 @@ Applicative: UniTerm = {
     <op: BOpPre> <t1: AsTerm<Atom>> <t2: AsTerm<Atom>>
         => UniTerm::from(mk_term::op2(op, t1, t2)),
     NOpPre<AsTerm<Atom>>,
-    "match" "{" <branches: (MatchCase ",")*> <last: MatchCase?> "}" => {
-        let mut default = None;
-
+    "match" "{" <branches: (MatchBranch ",")*> <last: MatchBranch?> "}" => {
         let branches = branches
             .into_iter()
-            .map(|(case, _comma)| case)
+            .map(|(branch, _comma)| branch)
             .chain(last)
-            .filter_map(|case| match case {
-                MatchCase::Normal(pat, branch) => Some((pat, branch)),
-                MatchCase::Default(default_branch) => {
-                    default = Some(default_branch);
-                    None
-                }
-            })
             .collect();
 
-        UniTerm::from(
-            Term::Match(MatchData {
-                branches,
-                default,
-            })
-        )
+        UniTerm::from(Term::Match(MatchData { branches }))
     }
 };
 
@@ -341,7 +327,7 @@ TypeArray: Type = "Array" <t: AsType<Atom>> =>
 
 // A record operation chain, such as `{foo = data}.bar.baz`.
 RecordOperationChain: RichTerm = {
-    <t: AsTerm<Atom>> "." <id: ExtendedIdent> => mk_term::op1(UnaryOp::StaticAccess(id), t).with_pos(id.pos),
+    <t: AsTerm<Atom>> "." <id: ExtendedIdent> => mk_term::op1(UnaryOp::RecordAccess(id), t).with_pos(id.pos),
     <t: AsTerm<Atom>> "." <t_id: WithPos<StrChunks>> => mk_access(t_id, t),
 };
 
@@ -418,10 +404,11 @@ RecordField: FieldDef = {
     <l: @L> <path: FieldPath> <ann: FieldAnnot<Type>?> <r: @R> <t: ("=" <Term>)?> => {
         let annot_span = mk_span(src_id, l, r);
         let span = if let Some(ref value) = t {
-                // value.pos.unwrap(): the position of `t` is necessarily set by the <Term> rule
+                // value.pos.unwrap(): the position of `t` is necessarily set by
+                // the <Term> rule
                 // result unwrap(): the term and the annotation have spans
-                //   coming from the same file (the current one)
-                RawSpan::fuse(annot_span, value.pos.unwrap()).unwrap()
+                // coming from the same file (the current one)
+                annot_span.fuse(value.pos.unwrap()).unwrap()
         } else {
             annot_span
         };
@@ -533,18 +520,26 @@ FieldPathElem: FieldPathElem = {
 
 // A pattern.
 //
-// The PatternF, PatternDataF and EnumPatternF rules are parametrized by a
-// (string) flag (using LALRPOP's undocumented conditional macros). The idea is
-// that those rules have two flavours: the most general one, which allow
-// patterns to be unrestricted, and a version for function arguments.
+// The PatternF, and in general several pattern rules ending with a capital `F`,
+// are parametrized by other pattern rules. In general, depending on where those
+// patterns and subpatterns occur, they need various restrictions to ensure that
+// parsing is never ambiguous (at least with respect to the LALR(1)/LR(1)
+// capabilities supported by LALRPOP).
 //
-// The issue is the following: before the introduction of enum variants,
-// functions have been allowed to match on several arguments using a sequence of
-// patterns. For example, `fun {x} {y} z => x + y + z`. With variants, we've
-// added the following pattern form: `'SomeTag argument`. Now, something like
-// `fun 'SomeTag 'SomeArg => ...` is ambiguous: are we matching on a single
-// argument that we expect to be `('SomeTag 'SomeArg)`, or on two separate
-// arguments that are bare enum tags, as in `fun ('SomeTag) ('SomeArg)`?
+// The various flavours of pattern rules and their respective motivation are
+// detailed below.
+//
+// # Parentheses
+//
+// ## Enum variants
+//
+// Before the introduction of enum variants, functions have been allowed to
+// match on several arguments using a sequence of patterns. For example, `fun
+// {x} {y} z => x + y + z`. With variants, we've added the following pattern
+// form: `'SomeTag argument`. Now, something like `fun 'SomeTag 'SomeArg => ...`
+// is ambiguous: are we matching on a single argument that we expect to be
+// `('SomeTag 'SomeArg)`, or on two separate arguments that are bare enum tags,
+// as in `fun ('SomeTag) ('SomeArg)`?
 //
 // To avoid ambiguity, we force the top-level argument patterns of a function to
 // use a parenthesized version for enum variants. Thus `fun 'Foo 'Bar => ...` is
@@ -558,12 +553,62 @@ FieldPathElem: FieldPathElem = {
 // readability. In practice, this means that the argument pattern of an enum
 // variant pattern has the same restriction as a function argument pattern.
 //
-// The flavour parameter `F` can either be `"function"`, which is disabling the
-// non-parenthesized enum variant rule, or any other string for the general
-// flavour. In practice we use "".
+// ## or-patterns
+//
+// The same ambiguity (and solution) extends to or-patterns, which are also
+// ambiguous when used as function arguments. As we want `or` to remain a valid
+// identifier, `fun x or y => ...` could be a function of 3 arguments `x`, `or`
+// and `y`, or a function of one argument matching the pattern `(x or y)` (this
+// isn't a valid or-pattern because the bound variables are different in each or
+// branch, but that's beside the point - checking variables mismatches isn't the
+// job of parsing rules).
+//
+// We thus reuse the exact same idea in order to force or-patterns used at the
+// top-level of a function argument to be parenthesized.
+//
+// ## Or-patterns ambiguities
+//
+// Parsing or-patterns without ambiguity, while still allowing `or` to remain
+// a valid identifier including within patterns (as in `'Foo or`) requires
+// slightly more complicated constraints.
+//
+// The first issue is parentheses: how to parse `x or y or z`? Here we take a
+// simple stance: patterns (enum variant patterns and or-patterns) within an
+// `or`-branch must be parenthesized. So, this is parsed as a flat or-pattern
+// `[x, y, z]`.
+//
+// The second, harder issue is that enum variant patterns might have a trailing
+// `or` identifier. That is, when seeing `'Foo or`, the parser doesn't know if
+// it should shift in the hope of seeing another pattern after the `or`, and
+// parsing the overall result as an or-pattern `['Foo, <another pattern]`, or
+// if it should reduce to the enum variant pattern `'Foo or` and continue.
+//
+// The general trick to solve those kind of issues is to regroup the "common
+// prefix" in one specific rule and disambiguate as late as possible. In this
+// case, more concretely:
+//
+// 1. We split the enum variant pattern rule in two distinct case: the `'<Tag>
+//   or` form, where the argument is an `Any` pattern with identifier `or`, and
+//   everything else
+// 2. Within an or-pattern branch, in the generic case, we restrict patterns
+//   so that they can't include the first form (`'<Tag> or`) nor enum tag
+//   patterns (like `'Foo`). This way, whether in a `('Foo or)` enum variant
+//   pattern, or in a `'Foo or 'Bar` or-pattern, the `'Foo or` part is
+//   invariably parsed using the special rule `EnumVariantOrPattern`.
+// 3. Then, in the or-pattern branch rule, we assemble `or` branches which are
+//   either `'<Tag> or`, which is re-interpreted on the fly not as a enum
+//   variant pattern, but as an enum tag pattern followed by `or`, or the
+//   restricted generic form of pattern followed by an actual `or`.
+//
+// There are other minor details, but with enough variations of pattern rules,
+// we can ensure there's only one way to parse each and every combination with
+// only one look-ahead, thus satisfying the LR(1).
 #[inline]
-PatternF<F>: Pattern = {
-    <l: @L> <alias:(<Ident> "@")?> <data: PatternDataF<F>> <r: @R> => {
+PatternF<EnumRule, OrRule, IdentRule>: Pattern = {
+    <l: @L>
+      <alias:(<WithPos<Ident>> "@")?>
+      <data: PatternDataF<EnumRule, OrRule, IdentRule>>
+    <r: @R> => {
         Pattern {
            alias,
            data,
@@ -573,33 +618,82 @@ PatternF<F>: Pattern = {
 };
 
 #[inline]
-PatternDataF<F>: PatternData = {
+PatternDataF<EnumRule, OrRule, IdentRule>: PatternData = {
     RecordPattern => PatternData::Record(<>),
-    EnumPatternF<F> => PatternData::Enum(<>),
-    Ident => PatternData::Any(<>),
+    ArrayPattern => PatternData::Array(<>),
+    ConstantPattern => PatternData::Constant(<>),
+    EnumRule => PatternData::Enum(<>),
+    OrRule => PatternData::Or(<>),
+    IdentRule => PatternData::Any(<>),
+    "_" => PatternData::Wildcard,
 };
 
-// A general pattern.
+// A general pattern, unrestricted.
 #[inline]
-Pattern: Pattern = PatternF<"">;
+Pattern: Pattern = PatternF<EnumPattern, OrPattern, Ident>;
 
-// A pattern restricted to function arguments.
-PatternFun: Pattern = PatternF<"function">;
+// A pattern restricted to function arguments, which requires or-patterns and
+// enum variant patterns to be parenthesized at the top-level.
+#[inline]
+PatternFun: Pattern = PatternF<EnumPatternParens, OrPatternParens, Ident>;
+
+// A pattern that can be used within a branch of an or-pattern. To avoid a
+// shift-reduce conflicts (because we want to allow `or` to remain a valid
+// identifier, even inside patterns), this pattern has the following
+// restrictions:
+//
+// 1. Enum tag patterns are forbidden (such as `'Foo or 'Bar`).
+// 2. Enum variant patterns shouldn't have the "or" identifier as an argument.
+// 3. Or-pattern must be parenthesized when nested in another or-pattern.
+// 4. Aliases are forbidden at the top-level. Otherwise, we run into troubles
+//   with alias chains. Furthermore, the branches of an or-pattern must have
+//   the same bound variables, so it usually makes more sense to alias the whole
+//   or-pattern instead of one specific branch.
+//
+// See the `PatternF` rule for an explanation of why we need those restrictions.
+#[inline]
+PatternOrBranch: Pattern =
+    <left: @L>
+      <data: PatternDataF<EnumPatternOrBranch, OrPatternParens, Ident>>
+    <right: @R> => {
+        Pattern {
+           alias: None,
+           data,
+           pos: mk_pos(src_id, left, right),
+        }
+    };
+
+ConstantPattern: ConstantPattern = {
+    <start: @L> <data: ConstantPatternData> <end: @R> => ConstantPattern {
+        data,
+        pos: mk_pos(src_id, start, end)
+    }
+};
+
+ConstantPatternData: ConstantPatternData = {
+    Bool => ConstantPatternData::Bool(<>),
+    NumberLiteral => ConstantPatternData::Number(<>),
+    // We could accept multiline strings here, but it's unlikely that this will
+    // result in very readable match expressions. For now we restrict ourselves
+    // to standard string; we can always extend to multiline later if needed
+    StandardStaticString => ConstantPatternData::String(<>.into()),
+    "null" => ConstantPatternData::Null,
+};
 
 RecordPattern: RecordPattern = {
     <start: @L> "{" <mut field_pats: (<FieldPattern> ",")*> <last: LastFieldPat?> "}" <end: @R> =>? {
         let tail = match last {
             Some(LastPattern::Normal(m)) => {
                 field_pats.push(*m);
-                RecordPatternTail::Empty
+                TailPattern::Empty
             },
             Some(LastPattern::Ellipsis(Some(captured))) => {
-                RecordPatternTail::Capture(captured)
+                TailPattern::Capture(captured)
             }
             Some(LastPattern::Ellipsis(None)) => {
-                RecordPatternTail::Open
+                TailPattern::Open
             }
-            None => RecordPatternTail::Empty,
+            None => TailPattern::Empty,
         };
 
         let pattern = RecordPattern {
@@ -613,25 +707,171 @@ RecordPattern: RecordPattern = {
     },
 };
 
-EnumPatternF<F>: EnumPattern = {
-    <start: @L> <tag: EnumTag> <end: @R> => EnumPattern {
-        tag,
-        pattern: None,
-        pos: mk_pos(src_id, start, end),
-    },
-    // See documentation of PatternF to see why we use the "function" variant
-    // here.
-    <start: @L> <tag: EnumTag> <pattern: PatternF<"function">> <end: @R> if F != "function" => EnumPattern {
-        tag,
-        pattern: Some(Box::new(pattern)),
-        pos: mk_pos(src_id, start, end),
-    },
-    <start: @L> "(" <tag: EnumTag> <pattern: PatternF<"function">> ")" <end: @R> => EnumPattern {
-        tag,
-        pattern: Some(Box::new(pattern)),
-        pos: mk_pos(src_id, start, end),
+ArrayPattern: ArrayPattern = {
+    <start: @L> "[" <mut patterns: (<Pattern> ",")*> <last: LastElemPat?> "]" <end: @R> => {
+        let tail = match last {
+            Some(LastPattern::Normal(m)) => {
+                patterns.push(*m);
+                TailPattern::Empty
+            },
+            Some(LastPattern::Ellipsis(Some(captured))) => {
+                TailPattern::Capture(captured)
+            }
+            Some(LastPattern::Ellipsis(None)) => {
+                TailPattern::Open
+            }
+            None => TailPattern::Empty,
+        };
+
+        let pattern = ArrayPattern{
+            patterns,
+            tail,
+            pos: mk_pos(src_id, start, end)
+        };
+
+        pattern
     },
 };
+
+// A pattern for an enum tag (without argument).
+EnumTagPattern: EnumPattern = <start: @L> <tag: EnumTag> <end: @R> => EnumPattern {
+    tag,
+    pattern: None,
+    pos: mk_pos(src_id, start, end),
+};
+
+// A rule which only matches an enum variant pattern of the form `'<Tag> or`.
+// Used to disambiguate between an enum variant pattern and an or-pattern.
+EnumVariantOrPattern: EnumPattern =
+    <start: @L>
+      <tag: EnumTag>
+      <or_arg: WithPos<IdentOr>>
+      <end: @R> => {
+        let pos_or = or_arg.pos;
+
+        EnumPattern {
+          tag,
+          pattern: Some(Box::new(Pattern {
+            data: PatternData::Any(or_arg),
+            alias: None,
+            pos: pos_or,
+          })),
+          pos: mk_pos(src_id, start, end),
+        }
+    };
+
+// An enum variant pattern, excluding the `EnumVariantPatternOr` case: that is,
+// this rule doesn't match the case `'<Tag> or`.
+EnumVariantNoOrPattern: EnumPattern =
+    <start: @L>
+      <tag: EnumTag>
+      <pattern: PatternF<EnumPatternParens, OrPatternParens, WithPos<RestrictedIdent>>>
+    <end: @R> => EnumPattern {
+        tag,
+        pattern: Some(Box::new(pattern)),
+        pos: mk_pos(src_id, start, end),
+    };
+
+// A pattern for an enum variant (with an argument). To avoid ambiguity, we need
+// to decompose it into two disjoint rules, one that only match the `'<Tag> or`
+// input and everything else.
+//
+// The idea is that the former case can also serve as the prefix of an
+// or-pattern, as in `'Foo or 'Bar`; but as long as we parse this common
+// prefix using the same rule and only disambiguate later, there is no
+// shift/reduce conflict.
+EnumVariantPattern: EnumPattern = {
+    EnumVariantOrPattern,
+    EnumVariantNoOrPattern,
+};
+
+// A twisted version of EnumPattern made specifically for the branch of an
+// or-pattern. As we parse `EnumVariantOrPattern` and treat it specifically in
+// an `or` branch (`OrPatternBranch`), we need to remove it from the enum
+// pattern rule.
+EnumPatternOrBranch: EnumPattern = {
+    EnumVariantNoOrPattern,
+    // Only a top-level un-parenthesized enum variant pattern can be ambiguous.
+    // If it's parenthesized, we allow the general version including the "or"
+    // identifier
+    "(" <EnumVariantPattern> ")",
+};
+
+
+// An unparenthesized enum pattern (including both enum tags and enum
+// variants).
+EnumPatternUnparens: EnumPattern = {
+    EnumTagPattern,
+    EnumVariantPattern,
+};
+
+// A parenthesized enum pattern, including both tags and variants (note that an
+// enum tag alone is never parenthesized: parentheses only applies to enum
+// variant patterns).
+EnumPatternParens: EnumPattern = {
+    EnumTagPattern,
+    "(" <EnumVariantPattern> ")",
+}
+
+// The unrestricted rule for enum patterns. Allows both enum tags and enum
+// variants, and both parenthesized and un-parenthesized enum variants.
+EnumPattern: EnumPattern = {
+    EnumTagPattern,
+    EnumVariantPattern,
+    "(" <EnumVariantPattern> ")"
+};
+
+// An individual element of an or-pattern, plus a trailing "or". This rule is a
+// bit artificial, and is essentially here to dispel the shift/reduce conflict
+// around `'Foo or`/`'Foo or 'Bar` explained in the description of `PatternF`.
+OrPatternBranch: Pattern = {
+    // To avoid various shift-reduce conflicts, the patterns used within an
+    // `or`-branch have several restrictions. See the `PatternOrBranch` rule.
+    <PatternOrBranch> "or",
+    // A variant pattern of the form `'<Tag> or`. The trick is to instead
+    // consider it as the enum tag pattern `'<Tag>` followed by the `or`
+    // contextual keyword after-the-fact.
+    <pat: EnumVariantOrPattern> => {
+        let pos = pat.pos;
+
+        Pattern {
+            pos,
+            alias: None,
+            data: PatternData::Enum(EnumPattern {
+                tag: pat.tag,
+                pattern: None,
+                pos,
+            }),
+        }
+    },
+};
+
+// Unparenthesized or-pattern.
+OrPatternUnparens: OrPattern = {
+    <start: @L>
+      <patterns: OrPatternBranch+>
+      <last: PatternF<EnumPattern, OrPatternParens, Ident>>
+    <end: @R> => {
+        let patterns =
+          patterns.into_iter().chain(std::iter::once(last)).collect();
+
+        OrPattern {
+            patterns,
+            pos: mk_pos(src_id, start, end),
+        }
+    },
+};
+
+// Parenthesized or-pattern.
+OrPatternParens: OrPattern = {
+    "(" <OrPatternUnparens> ")",
+};
+
+// Unrestricted or-pattern, which can be parenthesized or not.
+OrPattern: OrPattern = {
+    OrPatternUnparens,
+    OrPatternParens,
+}
 
 // A binding `ident = <pattern>` inside a record pattern.
 FieldPattern: FieldPattern = {
@@ -657,11 +897,17 @@ FieldPattern: FieldPattern = {
         },
 };
 
-// Last field of a pattern
+// Last field pattern of a record pattern
 LastFieldPat: LastPattern<FieldPattern> = {
     FieldPattern => LastPattern::Normal(Box::new(<>)),
     ".." <Ident?> => LastPattern::Ellipsis(<>),
 };
+
+// Last pattern of an array pattern
+LastElemPat: LastPattern<Pattern> = {
+    Pattern => LastPattern::Normal(Box::new(<>)),
+    ".." <Ident?> => LastPattern::Ellipsis(<>),
+}
 
 // A default annotation in a pattern.
 DefaultAnnot: RichTerm = "?" <t: Term> => t;
@@ -686,12 +932,24 @@ MetadataKeyword: LocIdent = {
 //
 // Thus, for fields, ExtendedIdent is use in place of Ident.
 ExtendedIdent: LocIdent = {
-    <WithPos<MetadataKeyword>>,
-    <Ident>,
+    WithPos<MetadataKeyword>,
+    Ident,
 };
 
-Ident: LocIdent = <l:@L> <i: "identifier"> <r:@R> =>
-    LocIdent::new_with_pos(i, mk_pos(src_id, l, r));
+// The "or" keyword, parsed as an indent.
+IdentOr: LocIdent = "or" => LocIdent::new("or");
+
+// The set of pure identifiers, which are never keywords in any context.
+RestrictedIdent: LocIdent = "identifier" => LocIdent::new(<>);
+
+// Identifiers allowed everywhere, which include pure identifiers and the "or"
+// contextual keyword. With a bit of effort around pattern, we can make it a
+// valid identifier unambiguously.
+#[inline]
+Ident: LocIdent = {
+    WithPos<IdentOr>,
+    WithPos<RestrictedIdent>,
+};
 
 Bool: bool = {
     "true" => true,
@@ -815,43 +1073,48 @@ ChunkLiteralPart: ChunkLiteralPart = {
 };
 
 UOp: UnaryOp = {
-    "typeof" => UnaryOp::Typeof(),
-    "blame" => UnaryOp::Blame(),
-    "chng_pol" => UnaryOp::ChangePolarity(),
-    "polarity" => UnaryOp::Pol(),
-    "go_dom" => UnaryOp::GoDom(),
-    "go_codom" => UnaryOp::GoCodom(),
-    "go_array" => UnaryOp::GoArray(),
-    "go_dict" => UnaryOp::GoDict(),
-    "embed" <Ident> => UnaryOp::Embed(<>),
-    "map"  => UnaryOp::ArrayMap(),
-    "generate" => UnaryOp::ArrayGen(),
-    "record_map" => UnaryOp::RecordMap(),
-    "seq" => UnaryOp::Seq(),
-    "deep_seq" => UnaryOp::DeepSeq(),
+    "typeof" => UnaryOp::Typeof,
+    "blame" => UnaryOp::Blame,
+    "label/flip_polarity" => UnaryOp::LabelFlipPol,
+    "label/polarity" => UnaryOp::LabelPol,
+    "label/go_dom" => UnaryOp::LabelGoDom,
+    "label/go_codom" => UnaryOp::LabelGoCodom,
+    "label/go_array" => UnaryOp::LabelGoArray,
+    "label/go_dict" => UnaryOp::LabelGoDict,
+    "contract/from_predicate" => UnaryOp::ContractFromPredicate,
+    "contract/from_validator" => UnaryOp::ContractFromValidator,
+    "contract/custom" => UnaryOp::ContractCustom,
+    "enum/embed" <Ident> => UnaryOp::EnumEmbed(<>),
+    "array/map"  => UnaryOp::ArrayMap,
+    "array/generate" => UnaryOp::ArrayGen,
+    "record/map" => UnaryOp::RecordMap,
+    "seq" => UnaryOp::Seq,
+    "deep_seq" => UnaryOp::DeepSeq,
     "op force" => UnaryOp::Force{ ignore_not_exported: false },
-    "length" => UnaryOp::ArrayLength(),
-    "fields" => UnaryOp::FieldsOf(),
-    "values" => UnaryOp::ValuesOf(),
-    "str_trim" => UnaryOp::StrTrim(),
-    "str_chars" => UnaryOp::StrChars(),
-    "str_uppercase" => UnaryOp::StrUppercase(),
-    "str_lowercase" => UnaryOp::StrLowercase(),
-    "str_length" => UnaryOp::StrLength(),
-    "str_from" => UnaryOp::ToStr(),
-    "num_from" => UnaryOp::NumFromStr(),
-    "enum_from" => UnaryOp::EnumFromStr(),
-    "str_is_match" => UnaryOp::StrIsMatch(),
-    "str_find" => UnaryOp::StrFind(),
-    "rec_force_op" => UnaryOp::RecForce(),
-    "rec_default_op" => UnaryOp::RecDefault(),
-    "record_empty_with_tail" => UnaryOp::RecordEmptyWithTail(),
-    "trace" => UnaryOp::Trace(),
-    "label_push_diag" => UnaryOp::LabelPushDiag(),
+    "array/length" => UnaryOp::ArrayLength,
+    "record/fields" => UnaryOp::RecordFields(RecordOpKind::IgnoreEmptyOpt),
+    "record/fields_with_opts" => UnaryOp::RecordFields(RecordOpKind::ConsiderAllFields),
+    "record/values" => UnaryOp::RecordValues,
+    "string/trim" => UnaryOp::StringTrim,
+    "string/chars" => UnaryOp::StringChars,
+    "string/uppercase" => UnaryOp::StringUppercase,
+    "string/lowercase" => UnaryOp::StringLowercase,
+    "string/length" => UnaryOp::StringLength,
+    "to_string" => UnaryOp::ToString,
+    "number/from_string" => UnaryOp::NumberFromString,
+    "enum/from_string" => UnaryOp::EnumFromString,
+    "string/is_match" => UnaryOp::StringIsMatch,
+    "string/find" => UnaryOp::StringFind,
+    "string/find_all" => UnaryOp::StringFindAll,
+    "op rec_force" => UnaryOp::RecForce,
+    "op rec_default" => UnaryOp::RecDefault,
+    "record/empty_with_tail" => UnaryOp::RecordEmptyWithTail,
+    "trace" => UnaryOp::Trace,
+    "label/push_diag" => UnaryOp::LabelPushDiag,
     <l: @L> "eval_nix" <r: @R> =>? {
         #[cfg(feature = "nix-experimental")]
         {
-            Ok(UnaryOp::EvalNix())
+            Ok(UnaryOp::EvalNix)
         }
         #[cfg(not(feature = "nix-experimental"))]
         {
@@ -863,64 +1126,58 @@ UOp: UnaryOp = {
             })
         }
     },
-    "enum_unwrap_variant" => UnaryOp::EnumUnwrapVariant(),
-    "enum_is_variant" => UnaryOp::EnumIsVariant(),
-    "enum_get_tag" => UnaryOp::EnumGetTag(),
+    "enum/get_arg" => UnaryOp::EnumGetArg,
+    "enum/make_variant" => UnaryOp::EnumMakeVariant,
+    "enum/is_variant" => UnaryOp::EnumIsVariant,
+    "enum/get_tag" => UnaryOp::EnumGetTag,
 }
 
-// It might seem silly that a match case can always be the catch-all case
-// `_ => <exp>`. It would be better to separate between a normal match case and
-// a rule for the catch-call. However, it's then surprisingly annoying to
-// express the rule for "match" such that it's both non-ambiguous and allow an
-// optional trailing comma ",".
-//
-// In the end, it was simpler to just allow the catch-all case to appear
-// anywhere, and then to raise an error in the action code of the "match" rule.
-MatchCase: MatchCase = {
-    <pat: Pattern> "=>" <t: Term> => MatchCase::Normal(pat, t),
-    "_" "=>" <Term> => MatchCase::Default(<>),
-};
+PatternGuard: RichTerm = "if" <Term> => <>;
+
+MatchBranch: MatchBranch =
+    <pattern: Pattern> <guard: PatternGuard?> "=>" <body: Term> =>
+        MatchBranch { pattern, guard, body};
 
 // Infix operators by precedence levels. Lowest levels take precedence over
 // highest ones.
 
 InfixBOp2: BinaryOp = {
-    "++" => BinaryOp::StrConcat(),
-    "@" => BinaryOp::ArrayConcat(),
+    "++" => BinaryOp::StringConcat,
+    "@" => BinaryOp::ArrayConcat,
 }
 
 InfixBOp3: BinaryOp = {
-    "*" => BinaryOp::Mult(),
-    "/" => BinaryOp::Div(),
-    "%" => BinaryOp::Modulo(),
+    "*" => BinaryOp::Mult,
+    "/" => BinaryOp::Div,
+    "%" => BinaryOp::Modulo,
 }
 
 InfixBOp4: BinaryOp = {
-    "+" => BinaryOp::Plus(),
-    "-" => BinaryOp::Sub(),
+    "+" => BinaryOp::Plus,
+    "-" => BinaryOp::Sub,
 }
 
 InfixUOp5: UnaryOp = {
-    "!" => UnaryOp::BoolNot(),
+    "!" => UnaryOp::BoolNot,
 }
 
 InfixBOp7: BinaryOp = {
-    "<" => BinaryOp::LessThan(),
-    "<=" => BinaryOp::LessOrEq(),
-    ">" => BinaryOp::GreaterThan(),
-    ">=" => BinaryOp::GreaterOrEq(),
+    "<" => BinaryOp::LessThan,
+    "<=" => BinaryOp::LessOrEq,
+    ">" => BinaryOp::GreaterThan,
+    ">=" => BinaryOp::GreaterOrEq,
 }
 
 InfixBOp8: BinaryOp = {
-    "==" => BinaryOp::Eq(),
+    "==" => BinaryOp::Eq,
 }
 
 InfixLazyBOp9: UnaryOp = {
-    "&&" => UnaryOp::BoolAnd(),
+    "&&" => UnaryOp::BoolAnd,
 }
 
 InfixLazyBOp10: UnaryOp = {
-    "||" => UnaryOp::BoolOr(),
+    "||" => UnaryOp::BoolOr,
 }
 
 InfixBOp: BinaryOp = {
@@ -956,8 +1213,8 @@ CurriedOp: RichTerm = {
     <l: @L> "!=" <r: @R> =>
         mk_fun!("x1", "x2",
             mk_term::op1(
-                UnaryOp::BoolNot(),
-                Term::Op2(BinaryOp::Eq(),
+                UnaryOp::BoolNot,
+                Term::Op2(BinaryOp::Eq,
                     mk_term::var("x1"),
                     mk_term::var("x2")
                 )
@@ -975,24 +1232,11 @@ CurriedOp: RichTerm = {
             "x1",
             "x2",
             mk_term::op2(
-                BinaryOp::DynAccess(),
+                BinaryOp::RecordGet,
                 mk_term::var("x2"),
                 mk_term::var("x1"),
             ).with_pos(mk_pos(src_id, l, r))
         ),
-    //<l: @L> "->" <r: @R> =>?
-    //    UniTerm::from(
-    //        mk_fun!("x1", "x2",
-    //            mk_term::op1(
-    //                UnaryOp::BoolNot(),
-    //                Term::Op2(BinaryOp::Eq(),
-    //                    mk_term::var("x2"),
-    //                    mk_term::var("x1")
-    //                )
-    //            )
-    //            .with_pos(mk_pos(src_id, l, r))
-    //        )
-    //    ),
 }
 
 InfixUOpApp<UOp, Expr>: UniTerm =
@@ -1012,7 +1256,7 @@ InfixExpr: UniTerm = {
 
     #[precedence(level="1")]
     "-" <AsTerm<InfixExpr>> =>
-        UniTerm::from(mk_term::op2(BinaryOp::Sub(), Term::Num(Number::ZERO), <>)),
+        UniTerm::from(mk_term::op2(BinaryOp::Sub, Term::Num(Number::ZERO), <>)),
 
     #[precedence(level="2")] #[assoc(side="left")]
     InfixBOpApp<InfixBOp2, InfixExpr, InfixExpr>,
@@ -1040,7 +1284,7 @@ InfixExpr: UniTerm = {
     InfixBOpApp<InfixBOp8, InfixExpr, InfixExpr>,
     <t1: AsTerm<InfixExpr>> "!=" <t2: AsTerm<InfixExpr>> =>
         UniTerm::from(
-            mk_term::op1(UnaryOp::BoolNot(), Term::Op2(BinaryOp::Eq(), t1, t2))
+            mk_term::op1(UnaryOp::BoolNot, Term::Op2(BinaryOp::Eq, t1, t2))
         ),
 
     #[precedence(level="9")] #[assoc(side="left")]
@@ -1055,58 +1299,58 @@ InfixExpr: UniTerm = {
 }
 
 BOpPre: BinaryOp = {
-    "apply_contract" => BinaryOp::ApplyContract(),
-    "array_lazy_app_ctr" => BinaryOp::ArrayLazyAppCtr(),
-    "record_lazy_app_ctr" => BinaryOp::RecordLazyAppCtr(),
-    "unseal" => BinaryOp::Unseal(),
-    "seal" => BinaryOp::Seal(),
-    "go_field" => BinaryOp::GoField(),
-    "has_field" => BinaryOp::HasField(RecordOpKind::IgnoreEmptyOpt),
-    "has_field_all" => BinaryOp::HasField(RecordOpKind::ConsiderAllFields),
-    "field_is_defined" => BinaryOp::FieldIsDefined(RecordOpKind::IgnoreEmptyOpt),
-    "field_is_defined_all" => BinaryOp::FieldIsDefined(RecordOpKind::ConsiderAllFields),
-    "elem_at" => BinaryOp::ArrayElemAt(),
-    "hash" => BinaryOp::Hash(),
-    "serialize" => BinaryOp::Serialize(),
-    "deserialize" => BinaryOp::Deserialize(),
-    "pow" => BinaryOp::Pow(),
-    "str_split" => BinaryOp::StrSplit(),
-    "str_contains" => BinaryOp::StrContains(),
-    "record_insert" => BinaryOp::DynExtend {
+    "contract/apply" => BinaryOp::ContractApply,
+    "contract/array_lazy_app" => BinaryOp::ContractArrayLazyApp,
+    "contract/record_lazy_app" => BinaryOp::ContractRecordLazyApp,
+    "unseal" => BinaryOp::Unseal,
+    "seal" => BinaryOp::Seal,
+    "label/go_field" => BinaryOp::LabelGoField,
+    "record/has_field" => BinaryOp::RecordHasField(RecordOpKind::IgnoreEmptyOpt),
+    "record/has_field_with_opts" => BinaryOp::RecordHasField(RecordOpKind::ConsiderAllFields),
+    "record/field_is_defined" => BinaryOp::RecordFieldIsDefined(RecordOpKind::IgnoreEmptyOpt),
+    "record/field_is_defined_with_opts" => BinaryOp::RecordFieldIsDefined(RecordOpKind::ConsiderAllFields),
+    "array/at" => BinaryOp::ArrayAt,
+    "hash" => BinaryOp::Hash,
+    "serialize" => BinaryOp::Serialize,
+    "deserialize" => BinaryOp::Deserialize,
+    "pow" => BinaryOp::Pow,
+    "string/split" => BinaryOp::StringSplit,
+    "string/contains" => BinaryOp::StringContains,
+    "record/insert" => BinaryOp::RecordInsert {
         ext_kind: RecordExtKind::WithValue,
         metadata: Default::default(),
         pending_contracts: Default::default(),
         op_kind: RecordOpKind::IgnoreEmptyOpt,
     },
-    "record_insert_all" => BinaryOp::DynExtend {
+    "record/insert_with_opts" => BinaryOp::RecordInsert {
         ext_kind: RecordExtKind::WithValue,
         metadata: Default::default(),
         pending_contracts: Default::default(),
         op_kind: RecordOpKind::ConsiderAllFields,
     },
-    "record_remove" => BinaryOp::DynRemove(RecordOpKind::IgnoreEmptyOpt),
-    "record_remove_all" => BinaryOp::DynRemove(RecordOpKind::ConsiderAllFields),
-    "label_with_message" => BinaryOp::LabelWithMessage(),
-    "label_with_notes" => BinaryOp::LabelWithNotes(),
-    "label_append_note" => BinaryOp::LabelAppendNote(),
-    "lookup_type_variable" => BinaryOp::LookupTypeVar(),
+    "record/remove" => BinaryOp::RecordRemove(RecordOpKind::IgnoreEmptyOpt),
+    "record/remove_with_opts" => BinaryOp::RecordRemove(RecordOpKind::ConsiderAllFields),
+    "label/with_message" => BinaryOp::LabelWithMessage,
+    "label/with_notes" => BinaryOp::LabelWithNotes,
+    "label/append_note" => BinaryOp::LabelAppendNote,
+    "label/lookup_type_variable" => BinaryOp::LabelLookupTypeVar,
 }
 
 NOpPre<ArgRule>: UniTerm = {
-    "str_replace" <t1: ArgRule> <t2: ArgRule> <t3: ArgRule> =>
-        UniTerm::from(mk_opn!(NAryOp::StrReplace(), t1, t2, t3)),
-    "str_replace_regex" <t1: ArgRule> <t2: ArgRule> <t3: ArgRule> =>
-        UniTerm::from(mk_opn!(NAryOp::StrReplaceRegex(), t1, t2, t3)),
-    "str_substr" <t1: ArgRule> <t2: ArgRule> <t3: ArgRule> =>
-        UniTerm::from(mk_opn!(NAryOp::StrSubstr(), t1, t2, t3)),
-    "record_seal_tail" <t1: ArgRule> <t2: ArgRule> <t3: ArgRule> <t4: ArgRule> =>
-        UniTerm::from(mk_opn!(NAryOp::RecordSealTail(), t1, t2, t3, t4)),
-    "record_unseal_tail" <t1: ArgRule> <t2: ArgRule> <t3: ArgRule> =>
-        UniTerm::from(mk_opn!(NAryOp::RecordUnsealTail(), t1, t2, t3)),
-    "insert_type_variable" <key: ArgRule> <pol: ArgRule> <label: ArgRule> =>
-        UniTerm::from(mk_opn!(NAryOp::InsertTypeVar(), key, pol, label)),
-    "array_slice" <t1: ArgRule> <t2: ArgRule> <t3: ArgRule> =>
-        UniTerm::from(mk_opn!(NAryOp::ArraySlice(), t1, t2, t3)),
+    "string/replace" <t1: ArgRule> <t2: ArgRule> <t3: ArgRule> =>
+        UniTerm::from(mk_opn!(NAryOp::StringReplace, t1, t2, t3)),
+    "string/replace_regex" <t1: ArgRule> <t2: ArgRule> <t3: ArgRule> =>
+        UniTerm::from(mk_opn!(NAryOp::StringReplaceRegex, t1, t2, t3)),
+    "string/substr" <t1: ArgRule> <t2: ArgRule> <t3: ArgRule> =>
+        UniTerm::from(mk_opn!(NAryOp::StringSubstr, t1, t2, t3)),
+    "record/seal_tail" <t1: ArgRule> <t2: ArgRule> <t3: ArgRule> <t4: ArgRule> =>
+        UniTerm::from(mk_opn!(NAryOp::RecordSealTail, t1, t2, t3, t4)),
+    "record/unseal_tail" <t1: ArgRule> <t2: ArgRule> <t3: ArgRule> =>
+        UniTerm::from(mk_opn!(NAryOp::RecordUnsealTail, t1, t2, t3)),
+    "label/insert_type_variable" <key: ArgRule> <pol: ArgRule> <label: ArgRule> =>
+        UniTerm::from(mk_opn!(NAryOp::LabelInsertTypeVar, key, pol, label)),
+    "array/slice" <t1: ArgRule> <t2: ArgRule> <t3: ArgRule> =>
+        UniTerm::from(mk_opn!(NAryOp::ArraySlice, t1, t2, t3)),
 }
 
 TypeBuiltin: Type = {
@@ -1221,6 +1465,7 @@ extern {
         "null" => Token::Normal(NormalToken::Null),
         "true" => Token::Normal(NormalToken::True),
         "false" => Token::Normal(NormalToken::False),
+        "or" => Token::Normal(NormalToken::Or),
 
         "?" => Token::Normal(NormalToken::QuestionMark),
         "," => Token::Normal(NormalToken::Comma),
@@ -1267,48 +1512,52 @@ extern {
         "Array" => Token::Normal(NormalToken::Array),
 
         "typeof" => Token::Normal(NormalToken::Typeof),
-        "apply_contract" => Token::Normal(NormalToken::ApplyContract),
-        "array_lazy_app_ctr" => Token::Normal(NormalToken::ArrayLazyAppCtr),
-        "record_lazy_app_ctr" => Token::Normal(NormalToken::RecordLazyAppCtr),
+        "contract/apply" => Token::Normal(NormalToken::ContractApply),
+        "contract/array_lazy_app" => Token::Normal(NormalToken::ContractArrayLazyApp),
+        "contract/record_lazy_app" => Token::Normal(NormalToken::ContractRecordLazyApp),
+        "contract/from_predicate" => Token::Normal(NormalToken::ContractFromPredicate),
+        "contract/from_validator" => Token::Normal(NormalToken::ContractFromValidator),
+        "contract/custom" => Token::Normal(NormalToken::ContractCustom),
         "op force" => Token::Normal(NormalToken::OpForce),
         "blame" => Token::Normal(NormalToken::Blame),
-        "chng_pol" => Token::Normal(NormalToken::ChangePol),
-        "polarity" => Token::Normal(NormalToken::Polarity),
-        "go_dom" => Token::Normal(NormalToken::GoDom),
-        "go_codom" => Token::Normal(NormalToken::GoCodom),
-        "go_array" => Token::Normal(NormalToken::GoArray),
-        "go_dict" => Token::Normal(NormalToken::GoDict),
-        "go_field" => Token::Normal(NormalToken::GoField),
+        "label/flip_polarity" => Token::Normal(NormalToken::LabelFlipPol),
+        "label/polarity" => Token::Normal(NormalToken::LabelPol),
+        "label/go_dom" => Token::Normal(NormalToken::LabelGoDom),
+        "label/go_codom" => Token::Normal(NormalToken::LabelGoCodom),
+        "label/go_array" => Token::Normal(NormalToken::LabelGoArray),
+        "label/go_dict" => Token::Normal(NormalToken::LabelGoDict),
+        "label/go_field" => Token::Normal(NormalToken::LabelGoField),
         "seal" => Token::Normal(NormalToken::Seal),
         "unseal" => Token::Normal(NormalToken::Unseal),
-        "embed" => Token::Normal(NormalToken::Embed),
-        "record_map" => Token::Normal(NormalToken::RecordMap),
-        "record_empty_with_tail" => Token::Normal(NormalToken::RecordEmptyWithTail),
-        "record_insert" => Token::Normal(NormalToken::RecordInsert),
-        "record_insert_all" => Token::Normal(NormalToken::RecordInsertAll),
-        "record_remove" => Token::Normal(NormalToken::RecordRemove),
-        "record_remove_all" => Token::Normal(NormalToken::RecordRemoveAll),
-        "record_seal_tail" => Token::Normal(NormalToken::RecordSealTail),
-        "record_unseal_tail" => Token::Normal(NormalToken::RecordUnsealTail),
+        "enum/embed" => Token::Normal(NormalToken::EnumEmbed),
+        "record/map" => Token::Normal(NormalToken::RecordMap),
+        "record/empty_with_tail" => Token::Normal(NormalToken::RecordEmptyWithTail),
+        "record/insert" => Token::Normal(NormalToken::RecordInsert),
+        "record/insert_with_opts" => Token::Normal(NormalToken::RecordInsertWithOpts),
+        "record/remove" => Token::Normal(NormalToken::RecordRemove),
+        "record/remove_with_opts" => Token::Normal(NormalToken::RecordRemoveWithOpts),
+        "record/seal_tail" => Token::Normal(NormalToken::RecordSealTail),
+        "record/unseal_tail" => Token::Normal(NormalToken::RecordUnsealTail),
         "seq" => Token::Normal(NormalToken::Seq),
         "deep_seq" => Token::Normal(NormalToken::DeepSeq),
-        "length" => Token::Normal(NormalToken::Length),
-        "fields" => Token::Normal(NormalToken::FieldsOf),
-        "values" => Token::Normal(NormalToken::ValuesOf),
+        "array/length" => Token::Normal(NormalToken::ArrayLength),
+        "record/fields" => Token::Normal(NormalToken::RecordFields),
+        "record/fields_with_opts" => Token::Normal(NormalToken::RecordFieldsWithOpts),
+        "record/values" => Token::Normal(NormalToken::RecordValues),
         "pow" => Token::Normal(NormalToken::Pow),
-        "rec_force_op" => Token::Normal(NormalToken::RecForceOp),
-        "rec_default_op" => Token::Normal(NormalToken::RecDefaultOp),
+        "op rec_force" => Token::Normal(NormalToken::OpRecForce),
+        "op rec_default" => Token::Normal(NormalToken::OpRecDefault),
         "trace" => Token::Normal(NormalToken::Trace),
-        "insert_type_variable" => Token::Normal(NormalToken::InsertTypeVar),
-        "lookup_type_variable" => Token::Normal(NormalToken::LookupTypeVar),
+        "label/insert_type_variable" => Token::Normal(NormalToken::LabelInsertTypeVar),
+        "label/lookup_type_variable" => Token::Normal(NormalToken::LabelLookupTypeVar),
 
-        "has_field" => Token::Normal(NormalToken::HasField),
-        "has_field_all" => Token::Normal(NormalToken::HasFieldAll),
-        "field_is_defined" => Token::Normal(NormalToken::FieldIsDefined),
-        "field_is_defined_all" => Token::Normal(NormalToken::FieldIsDefinedAll),
-        "map" => Token::Normal(NormalToken::Map),
-        "generate" => Token::Normal(NormalToken::ArrayGen),
-        "elem_at" => Token::Normal(NormalToken::ElemAt),
+        "record/has_field" => Token::Normal(NormalToken::RecordHasField),
+        "record/has_field_with_opts" => Token::Normal(NormalToken::RecordHasFieldWithOpts),
+        "record/field_is_defined" => Token::Normal(NormalToken::RecordFieldIsDefined),
+        "record/field_is_defined_with_opts" => Token::Normal(NormalToken::RecordFieldIsDefinedWithOpts),
+        "array/map" => Token::Normal(NormalToken::ArrayMap),
+        "array/generate" => Token::Normal(NormalToken::ArrayGen),
+        "array/at" => Token::Normal(NormalToken::ArrayAt),
 
         "merge" => Token::Normal(NormalToken::Merge),
         "default" => Token::Normal(NormalToken::Default),
@@ -1321,30 +1570,32 @@ extern {
         "hash" => Token::Normal(NormalToken::OpHash),
         "serialize" => Token::Normal(NormalToken::Serialize),
         "deserialize" => Token::Normal(NormalToken::Deserialize),
-        "str_split" => Token::Normal(NormalToken::StrSplit),
-        "str_trim" => Token::Normal(NormalToken::StrTrim),
-        "str_chars" => Token::Normal(NormalToken::StrChars),
-        "str_uppercase" => Token::Normal(NormalToken::StrUppercase),
-        "str_lowercase" => Token::Normal(NormalToken::StrLowercase),
-        "str_contains" => Token::Normal(NormalToken::StrContains),
-        "str_replace" => Token::Normal(NormalToken::StrReplace),
-        "str_replace_regex" => Token::Normal(NormalToken::StrReplaceRegex),
-        "str_is_match" => Token::Normal(NormalToken::StrIsMatch),
-        "str_find" => Token::Normal(NormalToken::StrFind),
-        "str_length" => Token::Normal(NormalToken::StrLength),
-        "str_substr" => Token::Normal(NormalToken::StrSubstr),
-        "str_from" => Token::Normal(NormalToken::ToStr),
-        "num_from" => Token::Normal(NormalToken::NumFromStr),
-        "enum_from" => Token::Normal(NormalToken::EnumFromStr),
-        "label_with_message" => Token::Normal(NormalToken::LabelWithMessage),
-        "label_with_notes" => Token::Normal(NormalToken::LabelWithNotes),
-        "label_append_note" => Token::Normal(NormalToken::LabelAppendNote),
-        "label_push_diag" => Token::Normal(NormalToken::LabelPushDiag),
-        "array_slice" => Token::Normal(NormalToken::ArraySlice),
+        "string/split" => Token::Normal(NormalToken::StringSplit),
+        "string/trim" => Token::Normal(NormalToken::StringTrim),
+        "string/chars" => Token::Normal(NormalToken::StringChars),
+        "string/uppercase" => Token::Normal(NormalToken::StringUppercase),
+        "string/lowercase" => Token::Normal(NormalToken::StringLowercase),
+        "string/contains" => Token::Normal(NormalToken::StringContains),
+        "string/replace" => Token::Normal(NormalToken::StringReplace),
+        "string/replace_regex" => Token::Normal(NormalToken::StringReplaceRegex),
+        "string/is_match" => Token::Normal(NormalToken::StringIsMatch),
+        "string/find" => Token::Normal(NormalToken::StringFind),
+        "string/find_all" => Token::Normal(NormalToken::StringFindAll),
+        "string/length" => Token::Normal(NormalToken::StringLength),
+        "string/substr" => Token::Normal(NormalToken::StringSubstr),
+        "to_string" => Token::Normal(NormalToken::ToString),
+        "number/from_string" => Token::Normal(NormalToken::NumberFromString),
+        "enum/from_string" => Token::Normal(NormalToken::EnumFromString),
+        "label/with_message" => Token::Normal(NormalToken::LabelWithMessage),
+        "label/with_notes" => Token::Normal(NormalToken::LabelWithNotes),
+        "label/append_note" => Token::Normal(NormalToken::LabelAppendNote),
+        "label/push_diag" => Token::Normal(NormalToken::LabelPushDiag),
+        "array/slice" => Token::Normal(NormalToken::ArraySlice),
         "eval_nix" => Token::Normal(NormalToken::EvalNix),
-        "enum_unwrap_variant" => Token::Normal(NormalToken::EnumUnwrapVariant),
-        "enum_is_variant" => Token::Normal(NormalToken::EnumIsVariant),
-        "enum_get_tag" => Token::Normal(NormalToken::EnumGetTag),
+        "enum/get_arg" => Token::Normal(NormalToken::EnumGetArg),
+        "enum/make_variant" => Token::Normal(NormalToken::EnumMakeVariant),
+        "enum/is_variant" => Token::Normal(NormalToken::EnumIsVariant),
+        "enum/get_tag" => Token::Normal(NormalToken::EnumGetTag),
         "pattern_branch" => Token::Normal(NormalToken::PatternBranch),
 
         "{" => Token::Normal(NormalToken::LBrace),

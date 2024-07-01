@@ -31,13 +31,13 @@ pub struct RawSpan {
 
 impl RawSpan {
     /// Fuse two spans if they are from the same source file. The resulting span is the smallest
-    /// span that contain both `span1` and `span2`.
-    pub fn fuse(span1: RawSpan, span2: RawSpan) -> Option<RawSpan> {
-        if span1.src_id == span2.src_id {
+    /// span that contain both `self` and `other`.
+    pub fn fuse(self, other: RawSpan) -> Option<RawSpan> {
+        if self.src_id == other.src_id {
             Some(RawSpan {
-                src_id: span1.src_id,
-                start: min(span1.start, span2.start),
-                end: max(span1.end, span2.end),
+                src_id: self.src_id,
+                start: min(self.start, other.start),
+                end: max(self.end, other.end),
             })
         } else {
             None
@@ -50,6 +50,19 @@ impl RawSpan {
             src_id,
             start: span.start(),
             end: span.end(),
+        }
+    }
+
+    /// Create a span from a numeric range. If either start or end is too large to be represented,
+    /// `u32::MAX` is used instead.
+    pub fn from_range<T>(src_id: FileId, range: std::ops::Range<T>) -> Self
+    where
+        u32: TryFrom<T>,
+    {
+        RawSpan {
+            src_id,
+            start: ByteIndex(u32::try_from(range.start).unwrap_or(u32::MAX)),
+            end: ByteIndex(u32::try_from(range.end).unwrap_or(u32::MAX)),
         }
     }
 
@@ -139,6 +152,34 @@ impl TermPos {
     /// Check whether this span contains a position.
     pub fn contains(&self, pos: RawPos) -> bool {
         self.as_opt_ref().map_or(false, |sp| sp.contains(pos))
+    }
+
+    /// Fuse two positions if they are from the same source file.
+    ///
+    /// - If both positions are defined and from the same file, the resulting position is the
+    /// smallest span that contain both.
+    /// - If both positions are defined but aren't from the same file, this returns `TermPos::None`
+    /// - If at most one position is defined, the other is returned (whether defined or not).
+    pub fn fuse(self, other: Self) -> Self {
+        match (self, other) {
+            (TermPos::Original(sp1), TermPos::Original(sp2)) => {
+                if let Some(span) = sp1.fuse(sp2) {
+                    TermPos::Original(span)
+                } else {
+                    TermPos::None
+                }
+            }
+            (TermPos::Inherited(sp1), TermPos::Inherited(sp2))
+            | (TermPos::Original(sp1), TermPos::Inherited(sp2))
+            | (TermPos::Inherited(sp1), TermPos::Original(sp2)) => {
+                if let Some(span) = sp1.fuse(sp2) {
+                    TermPos::Inherited(span)
+                } else {
+                    TermPos::None
+                }
+            }
+            (TermPos::None, maybe_def) | (maybe_def, TermPos::None) => maybe_def,
+        }
     }
 }
 

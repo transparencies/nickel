@@ -26,7 +26,7 @@ use crate::{
     },
     position::{RawSpan, TermPos},
     repl,
-    serialize::ExportFormat,
+    serialize::{ExportFormat, NickelPointer},
     term::{record::FieldMetadata, Number, RichTerm, Term},
     typ::{EnumRow, RecordRow, Type, TypeF, VarKindDiscriminant},
 };
@@ -49,7 +49,7 @@ pub enum Error {
 /// An error occurring during evaluation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvalError {
-    /// A blame occurred: a contract have been broken somewhere.
+    /// A blame occurred: a contract has been broken somewhere.
     BlameError {
         /// The argument failing the contract. If the argument has been forced by the contract,
         /// `evaluated_arg` provides the final value.
@@ -145,8 +145,12 @@ pub enum EvalError {
         label: label::Label,
         call_stack: CallStack,
     },
-    /// A non-equatable term was compared for equality.
-    EqError { eq_pos: TermPos, term: RichTerm },
+    /// Two non-equatable terms of the same type (e.g. functions) were compared for equality.
+    IncomparableValues {
+        eq_pos: TermPos,
+        left: RichTerm,
+        right: RichTerm,
+    },
     /// A value didn't match any branch of a `match` expression at runtime. This is a specialized
     /// version of [Self::NonExhaustiveMatch] when all branches are enum patterns. In this case,
     /// the error message is more informative than the generic one.
@@ -391,6 +395,17 @@ pub enum TypecheckError {
         /// The position of the expression that was being typechecked as `type_var`.
         pos: TermPos,
     },
+    /// Invalid or-pattern.
+    ///
+    /// This error is raised when the patterns composing an or-pattern don't have the precise
+    /// same set of free variables. For example, `'Foo x or 'Bar y`.
+    OrPatternVarsMismatch {
+        /// A variable which isn't present in all the other patterns (there might be more of them,
+        /// this is just a sample).
+        var: LocIdent,
+        /// The position of the whole or-pattern.
+        pos: TermPos,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
@@ -571,9 +586,18 @@ pub enum ImportError {
     ),
 }
 
-/// An error occurred during serialization.
 #[derive(Debug, PartialEq, Clone)]
-pub enum ExportError {
+pub struct ExportError {
+    /// The path to the field that contains a non-serializable value. This might be empty if the
+    /// error occurred before entering any record.
+    pub path: NickelPointer,
+    /// The cause of the error.
+    pub data: ExportErrorData,
+}
+
+/// The type of error occurring during serialization.
+#[derive(Debug, PartialEq, Clone)]
+pub enum ExportErrorData {
     /// Encountered a null value for a format that doesn't support them.
     UnsupportedNull(ExportFormat, RichTerm),
     /// Tried exporting something else than a `String` to raw format.
@@ -588,6 +612,15 @@ pub enum ExportError {
         value: Number,
     },
     Other(String),
+}
+
+impl From<ExportErrorData> for ExportError {
+    fn from(data: ExportErrorData) -> ExportError {
+        ExportError {
+            path: NickelPointer::new(),
+            data,
+        }
+    }
 }
 
 /// A general I/O error, occurring when reading a source file or writing an export.
@@ -688,7 +721,7 @@ impl ParseError {
                 token: (start, _, end),
                 expected,
             } => ParseError::UnexpectedToken(mk_span(file_id, start, end), expected),
-            lalrpop_util::ParseError::UnrecognizedEOF { expected, .. } => {
+            lalrpop_util::ParseError::UnrecognizedEof { expected, .. } => {
                 ParseError::UnexpectedEOF(file_id, expected)
             }
             lalrpop_util::ParseError::ExtraToken {
@@ -1201,18 +1234,92 @@ impl IntoDiagnostics<FileId> for EvalError {
 
                 labels.push(secondary(&merge_label.span).with_message(span_label));
 
+                fn push_merge_note(notes: &mut Vec<String>, typ: &str) {
+                    notes.push(format!(
+                        "Both values are of type {typ} but they aren't equal."
+                    ));
+                    notes.push(format!("{typ} values can only be merged if they are equal"));
+                }
+
+                let mut notes = vec![
+                    "Merge operands have the same merge priority but they can't \
+                    be combined."
+                        .to_owned(),
+                ];
+
+                if let (Some(left_ty), Some(right_ty)) =
+                    (right_arg.as_ref().type_of(), left_arg.as_ref().type_of())
+                {
+                    match left_ty.as_str() {
+                        _ if left_ty != right_ty => {
+                            notes.push(format!(
+                                "One value is of type {left_ty} \
+                                while the other is of type {right_ty}"
+                            ));
+                            notes.push("Values of different types can't be merged".to_owned());
+                        }
+                        "String" | "Number" | "Bool" | "Array" | "EnumTag" => {
+                            push_merge_note(&mut notes, &left_ty);
+                        }
+                        "Function" | "MatchExpression" => {
+                            notes.push(
+                                "Both values are functions (or match expressions)".to_owned(),
+                            );
+                            notes.push(
+                                "Functions can never be merged with anything else, \
+                                even another function."
+                                    .to_owned(),
+                            );
+                        }
+                        "EnumVariant" => {
+                            if let (
+                                Term::EnumVariant { tag: tag1, .. },
+                                Term::EnumVariant { tag: tag2, .. },
+                            ) = (right_arg.as_ref(), left_arg.as_ref())
+                            {
+                                // The only possible cause of failure of merging two enum variants is a
+                                // different tag (the arguments could fail to merge as well, but then
+                                // the error would have them as the operands, not the enclosing enums).
+                                notes.push(format!(
+                                    "Both values are enum variants, \
+                                    but their tags differ (`'{tag1}` vs `'{tag2}`)"
+                                ));
+                                notes.push(
+                                    "Enum variants can only be \
+                                    merged if they have the same tag"
+                                        .to_owned(),
+                                );
+                            } else {
+                                // This should not happen, but it's recoverable, so let's not fail
+                                // in release mode.
+                                debug_assert!(false);
+
+                                notes.push(
+                                    "Primitive values (Number, String, EnumTag and Bool) \
+                                    and arrays can only be merged if they are equal"
+                                        .to_owned(),
+                                );
+                                notes.push("Enum variants must have the same tag.".to_owned());
+                                notes.push("Functions can never be merged.".to_owned());
+                            }
+                        }
+                        _ => {
+                            // In other cases, we print a generic message
+                            notes.push(
+                                "Primitive values (Number, String, EnumTag and Bool) \
+                                    and arrays can only be merged if they are equal"
+                                    .to_owned(),
+                            );
+                            notes.push("Enum variants must have the same tag.".to_owned());
+                            notes.push("Functions can never be merged.".to_owned());
+                        }
+                    }
+                }
+
                 vec![Diagnostic::error()
                     .with_message("non mergeable terms")
                     .with_labels(labels)
-                    .with_notes(vec![
-                        "Both values have the same merge priority but they can't \
-                        be combined."
-                            .into(),
-                        "Primitive values (Number, String, and Bool) or arrays can be merged \
-                        only if they are equal."
-                            .into(),
-                        "Functions can never be merged.".into(),
-                    ])]
+                    .with_notes(notes)]
             }
             EvalError::UnboundIdentifier(ident, span_opt) => vec![Diagnostic::error()
                 .with_message(format!("unbound identifier `{ident}`"))
@@ -1262,28 +1369,42 @@ impl IntoDiagnostics<FileId> for EvalError {
                     .with_message(format!("{format} parse error: {msg}"))
                     .with_labels(labels)]
             }
-            EvalError::EqError { eq_pos, term: t } => {
-                let label = format!(
-                    "an argument has type {}, which cannot be compared for equality",
-                    t.term
-                        .type_of()
-                        .unwrap_or_else(|| String::from("<unevaluated>")),
-                );
+            EvalError::IncomparableValues {
+                eq_pos,
+                left,
+                right,
+            } => {
+                let mut labels = Vec::new();
 
-                let labels = match eq_pos {
-                    TermPos::Original(pos) | TermPos::Inherited(pos) if eq_pos != t.pos => {
-                        vec![
-                            primary(&pos).with_message(label),
-                            secondary_term(&t, files)
-                                .with_message("problematic argument evaluated to this"),
-                        ]
-                    }
-                    _ => vec![primary_term(&t, files).with_message(label)],
+                if let Some(span) = eq_pos.as_opt_ref() {
+                    labels.push(primary(span).with_message("in this equality comparison"));
+                }
+
+                // Push the label for the right or left argument and return the type of said
+                // argument.
+                let mut push_label = |prefix: &str, term: &RichTerm| -> String {
+                    let type_of = term
+                        .term
+                        .type_of()
+                        .unwrap_or_else(|| String::from("<unevaluated>"));
+
+                    labels.push(
+                        secondary_term(term, files)
+                            .with_message(format!("{prefix} argument has type {type_of}")),
+                    );
+
+                    type_of
                 };
+
+                let left_type = push_label("left", &left);
+                let right_type = push_label("right", &right);
 
                 vec![Diagnostic::error()
                     .with_message("cannot compare values for equality")
-                    .with_labels(labels)]
+                    .with_labels(labels)
+                    .with_notes(vec![format!(
+                        "A {left_type} can't be meaningfully compared with a {right_type}"
+                    )])]
             }
             EvalError::NonExhaustiveEnumMatch {
                 expected,
@@ -2424,6 +2545,22 @@ impl IntoDiagnostics<FileId> for TypecheckError {
                         ),
                     ])]
             }
+            TypecheckError::OrPatternVarsMismatch { var, pos } => {
+                let mut labels = vec![primary_alt(var.pos.into_opt(), var.into_label(), files)
+                    .with_message("this variable must occur in all branches")];
+
+                if let Some(span) = pos.into_opt() {
+                    labels.push(secondary(&span).with_message("in this or-pattern"));
+                }
+
+                vec![Diagnostic::error()
+                    .with_message("or-pattern variable mismatch".to_string())
+                    .with_labels(labels)
+                    .with_notes(vec![
+                        "All branches of an or-pattern must bind exactly the same set of variables"
+                            .into(),
+                    ])]
+            }
         }
     }
 }
@@ -2470,22 +2607,28 @@ impl IntoDiagnostics<FileId> for ExportError {
         files: &mut Files<String>,
         _stdlib_ids: Option<&Vec<FileId>>,
     ) -> Vec<Diagnostic<FileId>> {
-        match self {
-            ExportError::NotAString(rt) => vec![Diagnostic::error()
+        let mut notes = if !self.path.0.is_empty() {
+            vec![format!("When exporting field `{}`", self.path)]
+        } else {
+            vec![]
+        };
+
+        match self.data {
+            ExportErrorData::NotAString(rt) => vec![Diagnostic::error()
                 .with_message(format!(
                     "raw export expects a String value, but got {}",
                     rt.as_ref()
                         .type_of()
                         .unwrap_or_else(|| String::from("<unevaluated>"))
                 ))
-                .with_labels(vec![primary_term(&rt, files)])],
-            ExportError::UnsupportedNull(format, rt) => vec![Diagnostic::error()
-                .with_message(format!("{format} format doesn't support null values"))
-                .with_labels(vec![primary_term(&rt, files)])],
-            ExportError::NonSerializable(rt) => vec![Diagnostic::error()
-                .with_message("non serializable term")
                 .with_labels(vec![primary_term(&rt, files)])
-                .with_notes(vec![
+                .with_notes(notes)],
+            ExportErrorData::UnsupportedNull(format, rt) => vec![Diagnostic::error()
+                .with_message(format!("{format} format doesn't support null values"))
+                .with_labels(vec![primary_term(&rt, files)])
+                .with_notes(notes)],
+            ExportErrorData::NonSerializable(rt) => {
+                notes.extend([
                     "Nickel only supports serializing to and from strings, booleans, numbers, \
                     enum tags, `null` (depending on the format), as well as records and arrays \
                     of serializable values."
@@ -2496,27 +2639,43 @@ impl IntoDiagnostics<FileId> for ExportError {
                     "If you want serialization to ignore a specific value, please use the \
                     `not_exported` metadata."
                         .into(),
-                ])],
-            ExportError::NoDocumentation(rt) => vec![Diagnostic::error()
-                .with_message("no documentation found")
-                .with_labels(vec![primary_term(&rt, files)])
-                .with_notes(vec![
-                    "documentation can only be collected from a record.".to_owned()
-                ])],
-            ExportError::NumberOutOfRange { term, value } => vec![Diagnostic::error()
-                .with_message(format!(
-                    "The number {} is too large (in absolute value) to be serialized.",
-                    value.to_sci()
-                ))
-                .with_labels(vec![primary_term(&term, files)])
-                .with_notes(vec![format!(
+                ]);
+
+                vec![Diagnostic::error()
+                    .with_message("non serializable term")
+                    .with_labels(vec![primary_term(&rt, files)])
+                    .with_notes(notes)]
+            }
+            ExportErrorData::NoDocumentation(rt) => {
+                notes.push("documentation can only be collected from a record.".to_owned());
+
+                vec![Diagnostic::error()
+                    .with_message("no documentation found")
+                    .with_labels(vec![primary_term(&rt, files)])
+                    .with_notes(notes)]
+            }
+            ExportErrorData::NumberOutOfRange { term, value } => {
+                notes.push(format!(
                     "Only numbers in the range {:e} to {:e} can be portably serialized",
                     f64::MIN,
                     f64::MAX
-                )])],
-            ExportError::Other(msg) => vec![Diagnostic::error()
-                .with_message("serialization failed")
-                .with_notes(vec![msg])],
+                ));
+
+                vec![Diagnostic::error()
+                    .with_message(format!(
+                        "The number {} is too large (in absolute value) to be serialized.",
+                        value.to_sci()
+                    ))
+                    .with_labels(vec![primary_term(&term, files)])
+                    .with_notes(notes)]
+            }
+            ExportErrorData::Other(msg) => {
+                notes.push(msg);
+
+                vec![Diagnostic::error()
+                    .with_message("serialization failed")
+                    .with_notes(notes)]
+            }
         }
     }
 }

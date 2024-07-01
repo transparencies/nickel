@@ -27,7 +27,7 @@ use crate::{
     impl_display_from_pretty,
     label::{Label, MergeLabel},
     match_sharedterm,
-    position::TermPos,
+    position::{RawSpan, TermPos},
     typ::{Type, UnboundTypeVariableError},
     typecheck::eq::{contract_eq, type_eq_noenv},
 };
@@ -57,6 +57,9 @@ use std::{
     ops::Deref,
     rc::Rc,
 };
+
+/// The payload of a `Term::ForeignId`.
+pub type ForeignIdPayload = u64;
 
 /// The AST of a Nickel expression.
 ///
@@ -213,6 +216,27 @@ pub enum Term {
     #[serde(skip)]
     Type(Type),
 
+    /// A custom contract built.
+    ///
+    /// Custom contracts can be partial identities (the most general form, which either blame or
+    /// return the value with potential delayed checks buried inside), predicates or validator (see
+    /// [CustomContract].
+    ///
+    /// Partial identity are built using `std.contract.custom`. Note that, for backward
+    /// compatibility, users can also use naked functions ([Term::Fun]) for partial identities
+    /// instead. But this is discouraged and will be deprecated in the future. Indeed, custom
+    /// contracts aren't supposed to be applied using the standard function application, because we
+    /// need to perform additional bookkeeping upon application, so there's no good reason to
+    /// represent them as naked functions.
+    ///
+    /// Having a separate node lets us leverage the additional information for example to implement
+    /// a restricted `or` combinator on contracts, which needs to know which contracts support
+    /// booleans operations (predicates and validators), or for better error messages in the future
+    /// when parametric contracts aren't fully applied
+    /// ([#1460](https://github.com/tweag/nickel/issues/1460)).
+    #[serde(skip)]
+    CustomContract(CustomContract),
+
     /// A term that couldn't be parsed properly. Used by the LSP to handle partially valid
     /// programs.
     #[serde(skip)]
@@ -261,6 +285,13 @@ pub enum Term {
     ///
     /// This is a temporary solution, and will be removed in the future.
     Closure(CacheIndex),
+
+    #[serde(skip)]
+    /// An opaque value that cannot be constructed within Nickel code.
+    ///
+    /// This can be used by programs that embed Nickel, as they can inject these opaque
+    /// values into the AST.
+    ForeignId(ForeignIdPayload),
 }
 
 // PartialEq is mostly used for tests, when it's handy to compare something to an expected result.
@@ -351,13 +382,44 @@ pub enum BindingType {
     Revertible(FieldDeps),
 }
 
-/// A runtime representation of a contract, as a term ready to be applied via `AppContract`
-/// together with its label.
+/// A term representing a custom contract.
+///
+/// This term doesn't currently necessarily include all generic custom contracts occurring in a
+/// program (functions `Label -> Dyn -> Dyn`). For backward compatibility reasons, we need to
+/// support naked functions - custom contracts that don't use the corresponding
+/// `std.contract.custom` constructor.
+///
+/// In the future, we want to have all custom contracts represented as [CustomContract]s, requiring
+/// the use of a dedicated constructor: `std.contract.custom`, `std.contract.from_record`,
+/// etc in user code. The requirement of these dedicated constructors is unfortunately a breaking
+/// change for existing custom contracts previously written as naked functions. Using naked
+/// functions is discouraged and will be deprecated in the future.
+///
+/// In the meantime, we can put _some_ contracts here without breaking things (the one that are
+/// already built using a special constructor, such as `std.contract.from_predicate`). Maintaining
+/// those additional data (if a contract came from `from_predicate` or is a naked function) is
+/// useful for implementing some contract operations, such as the `or` combinator, or provide
+/// better error messages in some situations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CustomContract {
+    /// A contract built from a predicate. The argument is a function of type
+    /// `Dyn -> Bool`.
+    Predicate(RichTerm),
+    /// A contract built from a validator. A validator is a function of type `Dyn -> [| 'Ok, 'Error
+    /// ReifiedLabel |]` where `ReifiedLabel` is a record with error reporting data (a message,
+    /// notes, etc.)
+    Validator(RichTerm),
+    /// A generic custom contract, represented as a partial identity function of type `Label -> Dyn
+    /// -> Dyn`.
+    PartialIdentity(RichTerm),
+}
+
+/// A runtime representation of a contract, as a term and a label ready to be applied via
+/// [BinaryOp::ContractApply].
 #[derive(Debug, PartialEq, Clone)]
 pub struct RuntimeContract {
-    /// The pending contract, can be a function or a record.
+    /// The pending contract, which can be a function, a type, a [CustomContract] or a record.
     pub contract: RichTerm,
-
     /// The blame label.
     pub label: Label,
 }
@@ -393,7 +455,7 @@ impl RuntimeContract {
 
         mk_app!(
             make::op2(
-                BinaryOp::ApplyContract(),
+                BinaryOp::ContractApply,
                 self.contract,
                 Term::Lbl(self.label)
             )
@@ -604,13 +666,24 @@ impl fmt::Display for MergePriority {
     }
 }
 
+/// A branch of a match expression.
+#[derive(Debug, PartialEq, Clone)]
+pub struct MatchBranch {
+    /// The pattern on the left hand side of `=>`.
+    pub pattern: Pattern,
+    /// A potential guard, which is an additional side-condition defined as `if cond`. The value
+    /// stored in this field is the boolean condition itself.
+    pub guard: Option<RichTerm>,
+    /// The body of the branch, on the right hand side of `=>`.
+    pub body: RichTerm,
+}
+
 /// Content of a match expression.
 #[derive(Debug, PartialEq, Clone)]
 pub struct MatchData {
     /// Branches of the match expression, where the first component is the pattern on the left hand
     /// side of `=>` and the second component is the body of the branch.
-    pub branches: Vec<(Pattern, RichTerm)>,
-    pub default: Option<RichTerm>,
+    pub branches: Vec<MatchBranch>,
 }
 
 /// A type or a contract together with its corresponding label.
@@ -621,6 +694,19 @@ pub struct LabeledType {
 }
 
 impl LabeledType {
+    /// Create a labeled type from a type and a span, which are the minimal information required to
+    /// instantiate the type and the underlying label. All other values are set to the defaults.
+    pub fn new(typ: Type, span: RawSpan) -> Self {
+        Self {
+            typ: typ.clone(),
+            label: Label {
+                typ: Rc::new(typ),
+                span,
+                ..Default::default()
+            },
+        }
+    }
+
     /// Modify the label's `field_name` field.
     pub fn with_field_name(self, ident: Option<LocIdent>) -> Self {
         LabeledType {
@@ -851,15 +937,20 @@ impl Term {
             Term::Num(_) => Some("Number".to_owned()),
             Term::Str(_) => Some("String".to_owned()),
             Term::Fun(_, _) | Term::FunPattern(_, _) => Some("Function".to_owned()),
+            // We could print a separate type for predicates. For the time being, we just consider
+            // it to be the function resulting of `$predicate_to_ctr pred`.
             Term::Match { .. } => Some("MatchExpression".to_owned()),
             Term::Lbl(_) => Some("Label".to_owned()),
-            Term::Enum(_) => Some("Enum".to_owned()),
-            Term::EnumVariant { .. } => Some("Enum".to_owned()),
+            Term::Enum(_) => Some("EnumTag".to_owned()),
+            Term::EnumVariant { .. } => Some("EnumVariant".to_owned()),
             Term::Record(..) | Term::RecRecord(..) => Some("Record".to_owned()),
             Term::Array(..) => Some("Array".to_owned()),
             Term::SealingKey(_) => Some("SealingKey".to_owned()),
             Term::Sealed(..) => Some("Sealed".to_owned()),
             Term::Annotated(..) => Some("Annotated".to_owned()),
+            Term::Type(_) => Some("Type".to_owned()),
+            Term::ForeignId(_) => Some("ForeignId".to_owned()),
+            Term::CustomContract(_) => Some("CustomContract".to_owned()),
             Term::Let(..)
             | Term::LetPattern(..)
             | Term::App(_, _)
@@ -871,7 +962,6 @@ impl Term {
             | Term::Import(_)
             | Term::ResolvedImport(_)
             | Term::StrChunks(_)
-            | Term::Type(_)
             | Term::ParseError(_)
             | Term::RuntimeError(_) => None,
         }
@@ -901,11 +991,15 @@ impl Term {
             | Term::Fun(..)
             // match expressions are function
             | Term::Match {..}
+            // Custom contracts are values, usually wrapping a function
+            | Term::CustomContract(_)
             | Term::Lbl(_)
             | Term::Enum(_)
             | Term::EnumVariant {..}
             | Term::Record(..)
             | Term::Array(..)
+            | Term::Type(_)
+            | Term::ForeignId(_)
             | Term::SealingKey(_) => true,
             Term::Let(..)
             | Term::LetPattern(..)
@@ -922,7 +1016,6 @@ impl Term {
             | Term::ResolvedImport(_)
             | Term::StrChunks(_)
             | Term::RecRecord(..)
-            | Term::Type(_)
             | Term::ParseError(_)
             | Term::RuntimeError(_) => false,
         }
@@ -963,6 +1056,7 @@ impl Term {
             | Term::Str(_)
             | Term::Lbl(_)
             | Term::Enum(_)
+            | Term::ForeignId(_)
             | Term::SealingKey(_) => true,
             Term::Let(..)
             | Term::LetPattern(..)
@@ -970,6 +1064,7 @@ impl Term {
             | Term::Array(..)
             | Term::Fun(..)
             | Term::FunPattern(..)
+            | Term::CustomContract(_)
             | Term::App(_, _)
             | Term::Match { .. }
             | Term::Var(_)
@@ -1005,8 +1100,9 @@ impl Term {
             | Term::Array(..)
             | Term::Var(..)
             | Term::SealingKey(..)
-            | Term::Op1(UnaryOp::StaticAccess(_), _)
-            | Term::Op2(BinaryOp::DynAccess(), _, _)
+            | Term::ForeignId(..)
+            | Term::Op1(UnaryOp::RecordAccess(_), _)
+            | Term::Op2(BinaryOp::RecordGet, _, _)
             // Those special cases aren't really atoms, but mustn't be parenthesized because they
             // are really functions taking additional non-strict arguments and printed as "partial"
             // infix operators.
@@ -1015,8 +1111,8 @@ impl Term {
             // must never be parenthesized, such as in `(x ||)`.
             //
             // We might want a more robust mechanism for pretty printing such operators.
-            | Term::Op1(UnaryOp::BoolAnd(), _)
-            | Term::Op1(UnaryOp::BoolOr(), _) => true,
+            | Term::Op1(UnaryOp::BoolAnd, _)
+            | Term::Op1(UnaryOp::BoolOr, _) => true,
             // A number with a minus sign as a prefix isn't a proper atom
             Term::Num(n) if *n >= 0 => true,
             Term::Let(..)
@@ -1026,6 +1122,7 @@ impl Term {
             | Term::LetPattern(..)
             | Term::Fun(..)
             | Term::FunPattern(..)
+            | Term::CustomContract(_)
             | Term::App(..)
             | Term::Op1(..)
             | Term::Op2(..)
@@ -1123,32 +1220,32 @@ impl Deref for SharedTerm {
 #[derive(Clone, Debug, PartialEq)]
 pub enum UnaryOp {
     /// If-then-else.
-    Ite(),
+    IfThenElse,
 
     /// Return an enum tag representing the type of the term.
-    Typeof(),
+    Typeof,
 
     // Boolean AND and OR operator are encoded as unary operators so that they can be lazy in their
     // second argument.
     /// Boolean AND operator.
-    BoolAnd(),
+    BoolAnd,
 
     /// Boolean OR operator.
-    BoolOr(),
+    BoolOr,
 
     /// Boolean NOT operator.
-    BoolNot(),
+    BoolNot,
 
     /// Raise a blame, which stops the execution and prints an error according to the label
     /// argument.
-    Blame(),
+    Blame,
 
     /// Typecast an enum to a larger enum type.
     ///
     /// `Embed` is used to upcast enums. For example, if a value `x` has enum type `a | b`, then
     /// `embed c x` will have enum type `a | b | c`. It only affects typechecking as at runtime
     /// `embed someId` act like the identity.
-    Embed(LocIdent),
+    EnumEmbed(LocIdent),
 
     /// A specialized primop for match when all patterns are enum tags. In that case, instead of
     /// compiling to a generic sequence of if-then-else, we can be much more efficient by indexing
@@ -1156,26 +1253,26 @@ pub enum UnaryOp {
     /// tags to the corresponding branches, and the default case when `has_default` is `true`.
     TagsOnlyMatch { has_default: bool },
 
-    /// Static access to a record field.
+    /// Static record access.
     ///
     /// Static means that the field identifier is a statically known string inside the source.
-    StaticAccess(LocIdent),
+    RecordAccess(LocIdent),
 
     /// Map a function on each element of an array.
-    ArrayMap(),
+    ArrayMap,
 
     /// Map a function on a record.
     ///
     /// The mapped function must take two arguments, the name of the field as a string, and the
     /// content of the field. `RecordMap` then replaces the content of each field by the result of
     /// the function: i.e., `recordMap f {a=2;}` evaluates to `{a=(f "a" 2);}`.
-    RecordMap(),
+    RecordMap,
 
     /// Inverse the polarity of a label.
-    ChangePolarity(),
+    LabelFlipPol,
 
     /// Get the polarity of a label.
-    Pol(),
+    LabelPol,
 
     /// Go to the domain in the type path of a label.
     ///
@@ -1196,93 +1293,113 @@ pub enum UnaryOp {
     ///  ^^^ new type path
     /// ------------------- original type
     /// ```
-    GoDom(),
+    LabelGoDom,
 
     /// Go to the codomain in the type path of a label.
     ///
     /// See `GoDom`.
-    GoCodom(),
+    LabelGoCodom,
 
     /// Go to the array in the type path of a label.
     ///
     /// See `GoDom`.
-    GoArray(),
+    LabelGoArray,
 
     /// Go to the type ascribed to every field in a dictionary.
     ///
     /// See `GoDom`.
-    GoDict(),
+    LabelGoDict,
+
+    /// Wrap a predicate function as a [CustomContract]. You can think of this primop as
+    /// a type constructor for custom contracts.
+    ContractFromPredicate,
+
+    /// Wrap a validator function as a [CustomContract]. You can think of this primop as a type
+    /// constructor for custom contracts.
+    ContractFromValidator,
+
+    /// Wrap a partial identity function as a [CustomContract]. You can think of this primop as a
+    /// type constructor for contracts.
+    ContractCustom,
 
     /// Force the evaluation of its argument and proceed with the second.
-    Seq(),
+    Seq,
 
     /// Recursively force the evaluation of its first argument then returns the second.
     ///
     /// Recursive here means that the evaluation does not stop at a WHNF, but the content of arrays
     /// and records is also recursively forced.
-    DeepSeq(),
+    DeepSeq,
 
     /// Return the length of an array.
-    ArrayLength(),
+    ArrayLength,
 
     /// Generate an array of a given length by mapping a `Num -> Num` function onto `[1,..,n]`.
-    ArrayGen(),
+    ArrayGen,
 
     /// Generated by the evaluation of a string with interpolated expressions. `ChunksConcat`
     /// applied to the current chunk to evaluate. As additional state, it uses a string
     /// accumulator, the indentation of the chunk being evaluated, and the remaining chunks to be
     /// evaluated, all stored on the stack.
-    ChunksConcat(),
+    ChunksConcat,
 
     /// Return the names of the fields of a record as a string array.
-    FieldsOf(),
+    RecordFields(RecordOpKind),
 
     /// Return the values of the fields of a record as an array.
-    ValuesOf(),
+    RecordValues,
 
     /// Remove heading and trailing spaces from a string.
-    StrTrim(),
+    StringTrim,
 
     /// Return the array of characters of a string.
-    StrChars(),
+    StringChars,
 
     /// Transform a string to uppercase.
-    StrUppercase(),
+    StringUppercase,
 
     /// Transform a string to lowercase.
-    StrLowercase(),
+    StringLowercase,
 
     /// Return the length of a string.
-    StrLength(),
+    StringLength,
 
     /// Transform a data to a string.
-    ToStr(),
+    ToString,
 
     /// Transform a string to a number.
-    NumFromStr(),
+    NumberFromString,
 
     /// Transform a string to an enum.
-    EnumFromStr(),
+    EnumFromString,
 
     /// Test if a regex matches a string.
-    /// Like [`UnaryOp::StrFind`], this is a unary operator because we would like a way to share the
-    /// same "compiled regex" for many matching calls. This is done by returning functions
-    /// wrapping [`UnaryOp::StrIsMatchCompiled`] and [`UnaryOp::StrFindCompiled`]
-    StrIsMatch(),
+    /// Like [`UnaryOp::StringFind`], this is a unary operator because we would like a way to share
+    /// the same "compiled regex" for many matching calls. This is done by returning functions
+    /// wrapping [`UnaryOp::StringIsMatchCompiled`] and [`UnaryOp::StringFindCompiled`]
+    StringIsMatch,
 
     /// Match a regex on a string, and returns the captured groups together, the index of the
     /// match, etc.
-    StrFind(),
+    StringFind,
 
-    /// Version of [`UnaryOp::StrIsMatch`] which remembers the compiled regex.
-    StrIsMatchCompiled(CompiledRegex),
+    /// Returns all matches of a regex on a string, as an array of matches. Each
+    /// match contains the match groups, the starting index of the match and the
+    /// matched string.
+    StringFindAll,
 
-    /// Version of [`UnaryOp::StrFind`] which remembers the compiled regex.
-    StrFindCompiled(CompiledRegex),
+    /// Version of [`UnaryOp::StringIsMatch`] which remembers the compiled regex.
+    StringIsMatchCompiled(CompiledRegex),
+
+    /// Version of [`UnaryOp::StringFind`] which remembers the compiled regex.
+    StringFindCompiled(CompiledRegex),
+
+    /// Version of [`UnaryOp::StringFindAll`] which remembers the compiled regex.
+    StringFindAllCompiled(CompiledRegex),
 
     /// Force full evaluation of a term and return it.
     ///
-    /// This was added in the context of [`BinaryOp::ArrayLazyAppCtr`], in particular to make
+    /// This was added in the context of [`BinaryOp::ContractArrayLazyApp`], in particular to make
     /// serialization work with lazy array contracts.
     ///
     /// # `Force` vs. `DeepSeq`
@@ -1337,14 +1454,14 @@ pub enum UnaryOp {
     ///
     /// If a value has any explicit priority annotation, then the original annotation takes
     /// precedence and the default doesn't apply.
-    RecDefault(),
+    RecDefault,
 
     /// Recursive force priority operator. Similar to [UnaryOp::RecDefault], but propagate the
     /// `force` annotation.
     ///
     /// As opposed to `RecDefault`, the `force` takes precedence and erase any prior explicit
     /// priority annotation.
-    RecForce(),
+    RecForce,
 
     /// Creates an "empty" record with the sealed tail of its [`Term::Record`]
     /// argument.
@@ -1352,29 +1469,32 @@ pub enum UnaryOp {
     /// Used in the `$record` contract implementation to ensure that we can
     /// define a `field_diff` function that preserves the sealed polymorphic
     /// tail of its argument.
-    RecordEmptyWithTail(),
+    RecordEmptyWithTail,
 
     /// Print a message when encountered during evaluation and proceed with the evaluation of the
     /// argument on the top of the stack. Operationally the same as the identity function
-    Trace(),
+    Trace,
 
     /// Push a new, fresh diagnostic on the diagnostic stack of a contract label. This has the
     /// effect of saving the current diagnostic, as following calls to primop that modifies the
     /// label's current diagnostic will modify the fresh one, istead of the one being stacked.
     /// This primop shouldn't be used directly by user a priori, but is used internally during e.g.
     /// contract application.
-    LabelPushDiag(),
+    LabelPushDiag,
 
     /// Evaluate a string of nix code into a resulting nickel value. Currently completely (strictly) evaluates the nix code, and must result in a value serializable into JSON.
     #[cfg(feature = "nix-experimental")]
-    EvalNix(),
+    EvalNix,
 
-    /// Unwrap the variant from an enum: `%unwrap_enum_variant% ('Foo t) := t`
-    EnumUnwrapVariant(),
+    /// Retrive the argument from an enum variant: `%enum/get_arg% ('Foo t) := t`
+    EnumGetArg,
+    /// Create an enum variant from a tag and an argument. This operator is strict in tag and
+    /// return a function that can be further applied to an argument.
+    EnumMakeVariant,
     /// Return true if the given parameter is an enum variant.
-    EnumIsVariant(),
+    EnumIsVariant,
     /// Extract the tag from an enum tag or an enum variant.
-    EnumGetTag(),
+    EnumGetTag,
 
     /// Take a record representing bindings to be added to the local environment and proceed to
     /// evaluate a pattern branch given as a second argument (which isn't a proper primop argument
@@ -1388,64 +1508,71 @@ pub enum UnaryOp {
     /// the same kind of constraints when updating record fields with the recursive environment of
     /// a record, for example). This is why the name tries to make it clear that it shouldn't be
     /// used blindly for something else.
-    PatternBranch(),
+    PatternBranch,
 }
 
 impl fmt::Display for UnaryOp {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use UnaryOp::*;
         match self {
-            Ite() => write!(f, "if_then_else"),
-            Typeof() => write!(f, "typeof"),
-            BoolAnd() => write!(f, "bool_and"),
-            BoolOr() => write!(f, "bool_or"),
-            BoolNot() => write!(f, "bool_not"),
-            Blame() => write!(f, "blame"),
-            Embed(_) => write!(f, "embed"),
+            IfThenElse => write!(f, "if_then_else"),
+            Typeof => write!(f, "typeof"),
+            BoolAnd => write!(f, "bool/and"),
+            BoolOr => write!(f, "bool/or"),
+            BoolNot => write!(f, "bool/not"),
+            Blame => write!(f, "blame"),
+            EnumEmbed(_) => write!(f, "enum/embed"),
             TagsOnlyMatch { .. } => write!(f, "match"),
-            StaticAccess(_) => write!(f, "static_access"),
-            ArrayMap() => write!(f, "map"),
-            RecordMap() => write!(f, "record_map"),
-            ChangePolarity() => write!(f, "chng_pol"),
-            Pol() => write!(f, "polarity"),
-            GoDom() => write!(f, "go_dom"),
-            GoCodom() => write!(f, "go_codom"),
-            GoArray() => write!(f, "go_array"),
-            GoDict() => write!(f, "go_dict"),
-            Seq() => write!(f, "seq"),
-            DeepSeq() => write!(f, "deep_seq"),
-            ArrayLength() => write!(f, "length"),
-            ArrayGen() => write!(f, "generate"),
-            ChunksConcat() => write!(f, "chunks_concat"),
-            FieldsOf() => write!(f, "fields"),
-            ValuesOf() => write!(f, "values"),
-            StrTrim() => write!(f, "str_trim"),
-            StrChars() => write!(f, "str_chars"),
-            StrUppercase() => write!(f, "str_uppercase"),
-            StrLowercase() => write!(f, "str_lowercase"),
-            StrLength() => write!(f, "str_length"),
-            ToStr() => write!(f, "to_str"),
-            NumFromStr() => write!(f, "num_from_str"),
-            EnumFromStr() => write!(f, "enum_from_str"),
-            StrIsMatch() => write!(f, "str_is_match"),
-            StrFind() => write!(f, "str_find"),
-            StrIsMatchCompiled(_) => write!(f, "str_is_match_compiled"),
-            StrFindCompiled(_) => write!(f, "str_find_compiled"),
+            RecordAccess(_) => write!(f, "record/access"),
+            ArrayMap => write!(f, "array/map"),
+            RecordMap => write!(f, "record/map"),
+            LabelFlipPol => write!(f, "label/flip_polarity"),
+            LabelPol => write!(f, "label/polarity"),
+            LabelGoDom => write!(f, "label/go_dom"),
+            LabelGoCodom => write!(f, "label/go_codom"),
+            LabelGoArray => write!(f, "label/go_array"),
+            LabelGoDict => write!(f, "label/go_dict"),
+            ContractFromPredicate => write!(f, "contract/from_predicate"),
+            ContractFromValidator => write!(f, "contract/from_validator"),
+            ContractCustom => write!(f, "contract/custom"),
+            Seq => write!(f, "seq"),
+            DeepSeq => write!(f, "deep_seq"),
+            ArrayLength => write!(f, "array/length"),
+            ArrayGen => write!(f, "array/generate"),
+            ChunksConcat => write!(f, "chunks_concat"),
+            RecordFields(RecordOpKind::IgnoreEmptyOpt) => write!(f, "record/fields"),
+            RecordFields(RecordOpKind::ConsiderAllFields) => write!(f, "record/fields_with_opts"),
+            RecordValues => write!(f, "record/values"),
+            StringTrim => write!(f, "string/trim"),
+            StringChars => write!(f, "string/chars"),
+            StringUppercase => write!(f, "string/uppercase"),
+            StringLowercase => write!(f, "string/lowercase"),
+            StringLength => write!(f, "string/length"),
+            ToString => write!(f, "to_string"),
+            NumberFromString => write!(f, "number/from_string"),
+            EnumFromString => write!(f, "enum/from_string"),
+            StringIsMatch => write!(f, "string/is_match"),
+            StringFind => write!(f, "string/find"),
+            StringFindAll => write!(f, "string/find_all"),
+            StringIsMatchCompiled(_) => write!(f, "string/is_match_compiled"),
+            StringFindCompiled(_) => write!(f, "string/find_compiled"),
+            StringFindAllCompiled(_) => write!(f, "string/find_all_compiled"),
             Force { .. } => write!(f, "force"),
-            RecDefault() => write!(f, "rec_default"),
-            RecForce() => write!(f, "rec_force"),
-            RecordEmptyWithTail() => write!(f, "record_empty_with_tail"),
-            Trace() => write!(f, "trace"),
-            LabelPushDiag() => write!(f, "label_push_diag"),
+            RecDefault => write!(f, "rec_default"),
+            RecForce => write!(f, "rec_force"),
+            RecordEmptyWithTail => write!(f, "record/empty_with_tail"),
+            Trace => write!(f, "trace"),
+            LabelPushDiag => write!(f, "label/push_diag"),
 
             #[cfg(feature = "nix-experimental")]
-            EvalNix() => write!(f, "eval_nix"),
+            EvalNix => write!(f, "eval_nix"),
 
-            EnumUnwrapVariant() => write!(f, "enum_unwrap_variant"),
-            EnumIsVariant() => write!(f, "enum_is_variant"),
-            EnumGetTag() => write!(f, "enum_get_tag"),
+            EnumGetArg => write!(f, "enum/get_arg"),
+            EnumMakeVariant => write!(f, "enum/make_variant"),
+            EnumIsVariant => write!(f, "enum/is_variant"),
+            EnumGetTag => write!(f, "enum/get_tag"),
 
-            PatternBranch() => write!(f, "with_env"),
+            PatternBranch => write!(f, "pattern_branch"),
         }
     }
 }
@@ -1490,8 +1617,8 @@ impl UnaryOp {
     pub fn pos(&self) -> OpPos {
         use UnaryOp::*;
         match self {
-            BoolAnd() | BoolOr() | StaticAccess(_) => OpPos::Postfix,
-            Ite() => OpPos::Special,
+            BoolAnd | BoolOr | RecordAccess(_) => OpPos::Postfix,
+            IfThenElse => OpPos::Special,
             _ => OpPos::Prefix,
         }
     }
@@ -1522,63 +1649,63 @@ pub enum RecordOpKind {
 #[derive(Clone, Debug, PartialEq)]
 pub enum BinaryOp {
     /// Addition of numerals.
-    Plus(),
+    Plus,
 
     /// Subtraction of numerals.
-    Sub(),
+    Sub,
 
     /// Multiplication of numerals.
-    Mult(),
+    Mult,
 
     /// Floating-point division of numerals.
-    Div(),
+    Div,
 
     /// Modulo of numerals.
-    Modulo(),
+    Modulo,
 
     /// Raise a number to a power.
-    Pow(),
+    Pow,
 
     /// Concatenation of strings.
-    StrConcat(),
+    StringConcat,
 
     /// Polymorphic equality.
-    Eq(),
+    Eq,
 
     /// Strictly less than comparison operator.
-    LessThan(),
+    LessThan,
 
     /// Less than or equal comparison operator.
-    LessOrEq(),
+    LessOrEq,
 
     /// Strictly greater than comparison operator.
-    GreaterThan(),
+    GreaterThan,
 
     /// Greater than or equal comparison operator.
-    GreaterOrEq(),
+    GreaterOrEq,
 
     /// Apply a contract to a label and a value. The value is is stored on the stack unevaluated,
     /// while the contract and the label are the strict arguments to this operator. `ApplyContract`
     /// also accepts contracts as records, which are translated to a function that merge said
     /// contract with its argument. Finally, this operator marks the location of the contract
     /// argument on the stack for better error reporting.
-    ApplyContract(),
+    ContractApply,
 
     /// Unseal a sealed term.
     ///
     /// See [`BinaryOp::Seal`].
-    Unseal(),
+    Unseal,
 
     /// Go to a specific field in the type path of a label.
     ///
-    /// See `GoDom`.
-    GoField(),
+    /// See `LabelGoDom`.
+    LabelGoField,
 
     /// Extend a record with a dynamic field.
     ///
     /// Dynamic means that the field name may be an expression instead of a statically known
-    /// string. `DynExtend` tries to evaluate this name to a string, and in case of success, add a
-    /// field with this name to the given record with the expression on top of the stack as
+    /// string. `RecordExtend` tries to evaluate this name to a string, and in case of success, add
+    /// a field with this name to the given record with the expression on top of the stack as
     /// content.
     ///
     /// The field may have been defined with attached metadata, pending contracts and may or may
@@ -1586,30 +1713,31 @@ pub enum BinaryOp {
     /// aren't first class values, at least at the time of writing), so for now we attach it
     /// directly to the extend primop. This isn't ideal, and in the future we may want to have a
     /// more principled primop.
-    DynExtend {
+    RecordInsert {
         metadata: FieldMetadata,
         pending_contracts: Vec<RuntimeContract>,
         ext_kind: RecordExtKind,
         op_kind: RecordOpKind,
     },
 
-    /// Remove a field from a record. The field name is given as an arbitrary Nickel expression.
-    DynRemove(RecordOpKind),
+    /// Remove a field from a record. The field name is given as an argument.
+    RecordRemove(RecordOpKind),
 
-    /// Access the field of record. The field name is given as an arbitrary Nickel expression.
-    DynAccess(),
+    /// Dynamically access a field of record. The field name is given as an argument which should
+    /// evaluate to a string.
+    RecordGet,
 
     /// Test if a record has a specific field.
-    HasField(RecordOpKind),
+    RecordHasField(RecordOpKind),
 
     /// Test if the field of a record exists and has a definition.
-    FieldIsDefined(RecordOpKind),
+    RecordFieldIsDefined(RecordOpKind),
 
     /// Concatenate two arrays.
-    ArrayConcat(),
+    ArrayConcat,
 
     /// Access the n-th element of an array.
-    ArrayElemAt(),
+    ArrayAt,
 
     /// The merge operator (see [crate::eval::merge]). `Merge` is parametrized by a
     /// [crate::label::MergeLabel], which carries additional information for error-reporting
@@ -1617,51 +1745,51 @@ pub enum BinaryOp {
     Merge(MergeLabel),
 
     /// Hash a string.
-    Hash(),
+    Hash,
 
     /// Serialize a value to a string.
-    Serialize(),
+    Serialize,
 
     /// Deserialize a string to a value.
-    Deserialize(),
+    Deserialize,
 
     /// Split a string into an array.
-    StrSplit(),
+    StringSplit,
 
     /// Determine if a string is a substring of another one.
-    StrContains(),
+    StringContains,
 
     /// Seal a term with a sealing key (see [`Term::Sealed`]).
-    Seal(),
+    Seal,
 
     /// Lazily apply a contract to an Array.
     /// This simply inserts a contract into the array attributes.
-    ArrayLazyAppCtr(),
+    ContractArrayLazyApp,
 
     /// Lazily map contracts over a record. The arguments are a label and a function which takes
     /// the name of the field as a parameter and returns the corresponding contract.
-    RecordLazyAppCtr(),
+    ContractRecordLazyApp,
 
     /// Set the message of the current diagnostic of a label.
-    LabelWithMessage(),
+    LabelWithMessage,
 
     /// Set the notes of the current diagnostic of a label.
-    LabelWithNotes(),
+    LabelWithNotes,
 
     /// Append a note to the current diagnostic of a label.
-    LabelAppendNote(),
+    LabelAppendNote,
 
     /// Look up the [`crate::label::TypeVarData`] associated with a [`SealingKey`] in the type
     /// environment of a [label](Term::Lbl)
-    LookupTypeVar(),
+    LabelLookupTypeVar,
 }
 
 impl BinaryOp {
     pub fn pos(&self) -> OpPos {
         use BinaryOp::*;
         match self {
-            Plus() | Sub() | Mult() | Div() | Modulo() | StrConcat() | Eq() | LessThan()
-            | LessOrEq() | GreaterThan() | GreaterOrEq() | ArrayConcat() | Merge(_) => OpPos::Infix,
+            Plus | Sub | Mult | Div | Modulo | StringConcat | Eq | LessThan | LessOrEq
+            | GreaterThan | GreaterOrEq | ArrayConcat | Merge(_) => OpPos::Infix,
             _ => OpPos::Prefix,
         }
     }
@@ -1671,51 +1799,57 @@ impl fmt::Display for BinaryOp {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use BinaryOp::*;
         match self {
-            Plus() => write!(f, "plus"),
-            Sub() => write!(f, "sub"),
-            Mult() => write!(f, "mult"),
-            Div() => write!(f, "div"),
-            Modulo() => write!(f, "modulo"),
-            Pow() => write!(f, "pow"),
-            StrConcat() => write!(f, "str_concat"),
-            Eq() => write!(f, "eq"),
-            LessThan() => write!(f, "less_than"),
-            LessOrEq() => write!(f, "less_or_eq"),
-            GreaterThan() => write!(f, "greater_than"),
-            GreaterOrEq() => write!(f, "greater_or_eq"),
-            ApplyContract() => write!(f, "apply_contract"),
-            Unseal() => write!(f, "unseal"),
-            GoField() => write!(f, "go_field"),
-            DynExtend {
+            Plus => write!(f, "plus"),
+            Sub => write!(f, "sub"),
+            Mult => write!(f, "mult"),
+            Div => write!(f, "div"),
+            Modulo => write!(f, "modulo"),
+            Pow => write!(f, "pow"),
+            StringConcat => write!(f, "string/concat"),
+            Eq => write!(f, "eq"),
+            LessThan => write!(f, "less_than"),
+            LessOrEq => write!(f, "less_or_eq"),
+            GreaterThan => write!(f, "greater_than"),
+            GreaterOrEq => write!(f, "greater_or_eq"),
+            ContractApply => write!(f, "contract/apply"),
+            Unseal => write!(f, "unseal"),
+            LabelGoField => write!(f, "label/go_field"),
+            RecordInsert {
                 op_kind: RecordOpKind::IgnoreEmptyOpt,
                 ..
-            } => write!(f, "record_insert"),
-            DynExtend {
+            } => write!(f, "record/insert"),
+            RecordInsert {
                 op_kind: RecordOpKind::ConsiderAllFields,
                 ..
-            } => write!(f, "record_insert_all"),
-            DynRemove(RecordOpKind::IgnoreEmptyOpt) => write!(f, "record_remove"),
-            DynRemove(RecordOpKind::ConsiderAllFields) => write!(f, "record_remove_all"),
-            DynAccess() => write!(f, "dyn_access"),
-            HasField(RecordOpKind::IgnoreEmptyOpt) => write!(f, "has_field"),
-            HasField(RecordOpKind::ConsiderAllFields) => write!(f, "has_field_all"),
-            FieldIsDefined(RecordOpKind::IgnoreEmptyOpt) => write!(f, "field_is_defined"),
-            FieldIsDefined(RecordOpKind::ConsiderAllFields) => write!(f, "field_is_defined_all"),
-            ArrayConcat() => write!(f, "array_concat"),
-            ArrayElemAt() => write!(f, "elem_at"),
+            } => write!(f, "record/insert_with_opts"),
+            RecordRemove(RecordOpKind::IgnoreEmptyOpt) => write!(f, "record/remove"),
+            RecordRemove(RecordOpKind::ConsiderAllFields) => write!(f, "record/remove_with_opts"),
+            RecordGet => write!(f, "record/get"),
+            RecordHasField(RecordOpKind::IgnoreEmptyOpt) => write!(f, "record/has_field"),
+            RecordHasField(RecordOpKind::ConsiderAllFields) => {
+                write!(f, "record/has_field_with_opts")
+            }
+            RecordFieldIsDefined(RecordOpKind::IgnoreEmptyOpt) => {
+                write!(f, "record/field_is_defined")
+            }
+            RecordFieldIsDefined(RecordOpKind::ConsiderAllFields) => {
+                write!(f, "record/field_is_defined_with_opts")
+            }
+            ArrayConcat => write!(f, "array/concat"),
+            ArrayAt => write!(f, "array/at"),
             Merge(_) => write!(f, "merge"),
-            Hash() => write!(f, "hash"),
-            Serialize() => write!(f, "serialize"),
-            Deserialize() => write!(f, "deserialize"),
-            StrSplit() => write!(f, "str_split"),
-            StrContains() => write!(f, "str_contains"),
-            Seal() => write!(f, "seal"),
-            ArrayLazyAppCtr() => write!(f, "array_lazy_app_ctr"),
-            RecordLazyAppCtr() => write!(f, "record_lazy_app_ctr"),
-            LabelWithMessage() => write!(f, "label_with_message"),
-            LabelWithNotes() => write!(f, "label_with_notes"),
-            LabelAppendNote() => write!(f, "label_append_note"),
-            LookupTypeVar() => write!(f, "lookup_type_variable"),
+            Hash => write!(f, "hash"),
+            Serialize => write!(f, "serialize"),
+            Deserialize => write!(f, "deserialize"),
+            StringSplit => write!(f, "string/split"),
+            StringContains => write!(f, "string/contains"),
+            Seal => write!(f, "seal"),
+            ContractArrayLazyApp => write!(f, "contract/array_lazy_apply"),
+            ContractRecordLazyApp => write!(f, "contract/record_lazy_apply"),
+            LabelWithMessage => write!(f, "label/with_message"),
+            LabelWithNotes => write!(f, "label/with_notes"),
+            LabelAppendNote => write!(f, "label/append_note"),
+            LabelLookupTypeVar => write!(f, "label/lookup_type_variable"),
         }
     }
 }
@@ -1725,17 +1859,17 @@ impl fmt::Display for BinaryOp {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NAryOp {
     /// Replace a substring by another one in a string.
-    StrReplace(),
+    StringReplace,
 
-    /// Same as [`NAryOp::StrReplace`], but the pattern is interpreted as a regular expression.
-    StrReplaceRegex(),
+    /// Same as [`NAryOp::StringReplace`], but the pattern is interpreted as a regular expression.
+    StringReplaceRegex,
 
     /// Return a substring of an original string.
-    StrSubstr(),
+    StringSubstr,
 
     /// The merge operator in contract mode (see [crate::eval::merge]). The arguments are in order
     /// the contract's label, the value to check, and the contract as a record.
-    MergeContract(),
+    MergeContract,
 
     /// Seals one record into the tail of another. Used to ensure that functions using polymorphic
     /// record contracts do not violate parametricity.
@@ -1746,7 +1880,7 @@ pub enum NAryOp {
     ///     attempted,
     ///   - a [record](Term::Record), which is the record we wish to seal the tail into,
     ///   - the [record](Term::Record) that we wish to seal.
-    RecordSealTail(),
+    RecordSealTail,
 
     /// Unseals a term from the tail of a record and returns it.
     ///
@@ -1755,7 +1889,7 @@ pub enum NAryOp {
     ///   - a [label](Term::Lbl) which will be used to assign blame correctly if
     ///     something goes wrong while unsealing,
     ///   - the [record](Term::Record) whose tail we wish to unseal.
-    RecordUnsealTail(),
+    RecordUnsealTail,
 
     /// Insert type variable data into the `type_environment` of a [`crate::label::Label`]
     ///
@@ -1764,25 +1898,25 @@ pub enum NAryOp {
     ///   - the [introduction polarity](crate::label::Polarity) of the type variable
     ///   - the [kind](crate::typ::VarKind) of the type variable
     ///   - a [label](Term::Lbl) on which to operate
-    InsertTypeVar(),
+    LabelInsertTypeVar,
 
     /// Return a sub-array corresponding to a range. Given that Nickel uses array slices under the
     /// hood, as long as the array isn't modified later, this operation is constant in time and
     /// memory.
-    ArraySlice(),
+    ArraySlice,
 }
 
 impl NAryOp {
     pub fn arity(&self) -> usize {
         match self {
-            NAryOp::StrReplace()
-            | NAryOp::StrReplaceRegex()
-            | NAryOp::StrSubstr()
-            | NAryOp::MergeContract()
-            | NAryOp::RecordUnsealTail()
-            | NAryOp::InsertTypeVar()
-            | NAryOp::ArraySlice() => 3,
-            NAryOp::RecordSealTail() => 4,
+            NAryOp::StringReplace
+            | NAryOp::StringReplaceRegex
+            | NAryOp::StringSubstr
+            | NAryOp::MergeContract
+            | NAryOp::RecordUnsealTail
+            | NAryOp::LabelInsertTypeVar
+            | NAryOp::ArraySlice => 3,
+            NAryOp::RecordSealTail => 4,
         }
     }
 }
@@ -1791,14 +1925,14 @@ impl fmt::Display for NAryOp {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use NAryOp::*;
         match self {
-            StrReplace() => write!(f, "str_replace"),
-            StrReplaceRegex() => write!(f, "str_replace_regex"),
-            StrSubstr() => write!(f, "str_substr"),
-            MergeContract() => write!(f, "merge_contract"),
-            RecordSealTail() => write!(f, "record_seal_tail"),
-            RecordUnsealTail() => write!(f, "record_unseal_tail"),
-            InsertTypeVar() => write!(f, "insert_type_variable"),
-            ArraySlice() => write!(f, "array_slice"),
+            StringReplace => write!(f, "string/replace"),
+            StringReplaceRegex => write!(f, "string/replace_regex"),
+            StringSubstr => write!(f, "string/substr"),
+            MergeContract => write!(f, "merge_contract"),
+            RecordSealTail => write!(f, "record/seal_tail"),
+            RecordUnsealTail => write!(f, "record/unseal_tail"),
+            LabelInsertTypeVar => write!(f, "label/insert_type_variable"),
+            ArraySlice => write!(f, "array/slice"),
         }
     }
 }
@@ -1981,6 +2115,22 @@ impl Traverse<RichTerm> for RichTerm {
                 let t = t.traverse(f, order)?;
                 RichTerm::new(Term::FunPattern(pat, t), pos)
             }
+            Term::CustomContract(CustomContract::Predicate(t)) => {
+                let t = t.traverse(f, order)?;
+                RichTerm::new(Term::CustomContract(CustomContract::Predicate(t)), pos)
+            }
+            Term::CustomContract(CustomContract::Validator(t)) => {
+                let t = t.traverse(f, order)?;
+                RichTerm::new(Term::CustomContract(CustomContract::Validator(t)), pos)
+            }
+            Term::CustomContract(CustomContract::PartialIdentity(t)) => {
+                let t = t.traverse(f, order)?;
+                RichTerm::new(
+                    Term::CustomContract(CustomContract::PartialIdentity(t)),
+                    pos,
+                )
+            }
+
             Term::Let(id, t1, t2, attrs) => {
                 let t1 = t1.traverse(f, order)?;
                 let t2 = t2.traverse(f, order)?;
@@ -1999,19 +2149,31 @@ impl Traverse<RichTerm> for RichTerm {
             Term::Match(data) => {
                 // The annotation on `map_res` use Result's corresponding trait to convert from
                 // Iterator<Result> to a Result<Iterator>
-                let branches: Result<Vec<(Pattern, RichTerm)>, E> = data
+                let branches: Result<Vec<MatchBranch>, E> = data
                     .branches
                     .into_iter()
                     // For the conversion to work, note that we need a Result<(Ident,RichTerm), E>
-                    .map(|(pat, t)| t.traverse(f, order).map(|t_ok| (pat, t_ok)))
-                    .collect();
+                    .map(
+                        |MatchBranch {
+                             pattern,
+                             guard,
+                             body,
+                         }| {
+                            let guard = guard.map(|cond| cond.traverse(f, order)).transpose()?;
+                            let body = body.traverse(f, order)?;
 
-                let default = data.default.map(|t| t.traverse(f, order)).transpose()?;
+                            Ok(MatchBranch {
+                                pattern,
+                                guard,
+                                body,
+                            })
+                        },
+                    )
+                    .collect();
 
                 RichTerm::new(
                     Term::Match(MatchData {
                         branches: branches?,
-                        default,
                     }),
                     pos,
                 )
@@ -2147,6 +2309,7 @@ impl Traverse<RichTerm> for RichTerm {
             | Term::Import(_)
             | Term::ResolvedImport(_)
             | Term::SealingKey(_)
+            | Term::ForeignId(_)
             | Term::ParseError(_)
             | Term::RuntimeError(_) => None,
             Term::StrChunks(chunks) => chunks.iter().find_map(|ch| {
@@ -2158,6 +2321,9 @@ impl Traverse<RichTerm> for RichTerm {
             }),
             Term::Fun(_, t)
             | Term::FunPattern(_, t)
+            | Term::CustomContract(CustomContract::Predicate(t))
+            | Term::CustomContract(CustomContract::Validator(t))
+            | Term::CustomContract(CustomContract::PartialIdentity(t))
             | Term::EnumVariant { arg: t, .. }
             | Term::Op1(_, t)
             | Term::Sealed(_, t, _) => t.traverse_ref(f, state),
@@ -2181,11 +2347,19 @@ impl Traverse<RichTerm> for RichTerm {
                             .or_else(|| field.traverse_ref(f, state))
                     })
                 }),
-            Term::Match(data) => data
-                .branches
-                .iter()
-                .find_map(|(_pat, t)| t.traverse_ref(f, state))
-                .or_else(|| data.default.as_ref().and_then(|t| t.traverse_ref(f, state))),
+            Term::Match(data) => data.branches.iter().find_map(
+                |MatchBranch {
+                     pattern: _,
+                     guard,
+                     body,
+                 }| {
+                    if let Some(cond) = guard.as_ref() {
+                        cond.traverse_ref(f, state)?;
+                    }
+
+                    body.traverse_ref(f, state)
+                },
+            ),
             Term::Array(ts, _) => ts.iter().find_map(|t| t.traverse_ref(f, state)),
             Term::OpN(_, ts) => ts.iter().find_map(|t| t.traverse_ref(f, state)),
             Term::Annotated(annot, t) => t
@@ -2504,7 +2678,11 @@ pub mod make {
         T2: Into<RichTerm>,
         T3: Into<RichTerm>,
     {
-        mk_app!(Term::Op1(UnaryOp::Ite(), cond.into()), t1.into(), t2.into())
+        mk_app!(
+            Term::Op1(UnaryOp::IfThenElse, cond.into()),
+            t1.into(),
+            t2.into()
+        )
     }
 
     pub fn op1<T>(op: UnaryOp, t: T) -> RichTerm
@@ -2538,7 +2716,7 @@ pub mod make {
         T: Into<RichTerm>,
     {
         Ok(mk_app!(
-            op2(BinaryOp::ApplyContract(), typ.contract()?, Term::Lbl(l)),
+            op2(BinaryOp::ContractApply, typ.contract()?, Term::Lbl(l)),
             t.into()
         ))
     }
@@ -2574,7 +2752,7 @@ pub mod make {
     {
         let mut term = record.into();
         for f in fields.into_iter() {
-            term = make::op1(UnaryOp::StaticAccess(f.into()), term);
+            term = make::op1(UnaryOp::RecordAccess(f.into()), term);
         }
         term
     }
@@ -2587,9 +2765,9 @@ mod tests {
     #[test]
     fn make_static_access() {
         let t = make::op1(
-            UnaryOp::StaticAccess("record".into()),
+            UnaryOp::RecordAccess("record".into()),
             make::op1(
-                UnaryOp::StaticAccess("records".into()),
+                UnaryOp::RecordAccess("records".into()),
                 make::var("predicates"),
             ),
         );

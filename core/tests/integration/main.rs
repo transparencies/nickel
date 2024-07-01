@@ -1,7 +1,9 @@
 use std::{io::Cursor, thread};
 
 use nickel_lang_core::{
-    error::{Error, EvalError, ExportError, ImportError, ParseError, TypecheckError},
+    error::{
+        Error, EvalError, ExportError, ExportErrorData, ImportError, ParseError, TypecheckError,
+    },
     term::Term,
 };
 use nickel_lang_utils::{
@@ -143,10 +145,12 @@ enum Expectation {
 #[serde(tag = "error", content = "expectation")]
 enum ErrorExpectation {
     // TODO: can we somehow unify this with the `Display` impl below?
-    #[serde(rename = "EvalError::EqError")]
-    EvalEqError,
+    #[serde(rename = "EvalError::IncomparableValues")]
+    EvalIncomparableValues,
     #[serde(rename = "EvalError::Other")]
     EvalOther,
+    #[serde(rename = "EvalError::UnaryPrimopTypeError")]
+    EvalUnaryPrimopTypeError,
     #[serde(rename = "EvalError::NAryPrimopTypeError")]
     EvalNAryPrimopTypeError,
     #[serde(rename = "EvalError::BlameError")]
@@ -165,6 +169,8 @@ enum ErrorExpectation {
     EvalMergeIncompatibleArgs,
     #[serde(rename = "EvalError::NonExhaustiveMatch")]
     EvalNonExhaustiveMatch,
+    #[serde(rename = "EvalError::NonExhaustiveEnumMatch")]
+    EvalNonExhaustiveEnumMatch,
     #[serde(rename = "TypecheckError::UnboundIdentifier")]
     TypecheckUnboundIdentifier { identifier: String },
     #[serde(rename = "TypecheckError::UnboundTypeVariable")]
@@ -198,6 +204,8 @@ enum ErrorExpectation {
     TypecheckFlatTypeInTermPosition,
     #[serde(rename = "TypecheckError::VarLevelMismatch")]
     TypecheckVarLevelMismatch { type_var: String },
+    #[serde(rename = "TypecheckError::OrPatternVarsMismatch")]
+    TypecheckOrPatternVarsMismatch { var: String },
     #[serde(rename = "ParseError")]
     AnyParseError,
     #[serde(rename = "ParseError::DuplicateIdentInRecordPattern")]
@@ -222,8 +230,12 @@ impl PartialEq<Error> for ErrorExpectation {
                 Error::EvalError(EvalError::IllegalPolymorphicTailAccess { .. }),
             )
             | (EvalTypeError, Error::EvalError(EvalError::TypeError(..)))
-            | (EvalEqError, Error::EvalError(EvalError::EqError { .. }))
+            | (EvalIncomparableValues, Error::EvalError(EvalError::IncomparableValues { .. }))
             | (EvalNAryPrimopTypeError, Error::EvalError(EvalError::NAryPrimopTypeError { .. }))
+            | (
+                EvalUnaryPrimopTypeError,
+                Error::EvalError(EvalError::UnaryPrimopTypeError { .. }),
+            )
             | (EvalInfiniteRecursion, Error::EvalError(EvalError::InfiniteRecursion(..)))
             | (
                 EvalMergeIncompatibleArgs,
@@ -231,6 +243,10 @@ impl PartialEq<Error> for ErrorExpectation {
             )
             | (EvalOther, Error::EvalError(EvalError::Other(..)))
             | (EvalNonExhaustiveMatch, Error::EvalError(EvalError::NonExhaustiveMatch { .. }))
+            | (
+                EvalNonExhaustiveEnumMatch,
+                Error::EvalError(EvalError::NonExhaustiveEnumMatch { .. }),
+            )
             | (
                 TypecheckRecordRowMismatch,
                 Error::TypecheckError(TypecheckError::RecordRowMismatch { .. }),
@@ -252,7 +268,8 @@ impl PartialEq<Error> for ErrorExpectation {
             | (ImportIoError, Error::ImportError(ImportError::IOError(..)))
             | (
                 SerializeNumberOutOfRange,
-                Error::EvalError(EvalError::SerializationError(ExportError::NumberOutOfRange {
+                Error::EvalError(EvalError::SerializationError(ExportError {
+                    data: ExportErrorData::NumberOutOfRange { .. },
                     ..
                 })),
             ) => true,
@@ -340,6 +357,10 @@ impl PartialEq<Error> for ErrorExpectation {
                     type_var: constant, ..
                 }),
             ) => ident == constant.label(),
+            (
+                TypecheckOrPatternVarsMismatch { var },
+                Error::TypecheckError(TypecheckError::OrPatternVarsMismatch { var: id, .. }),
+            ) => var == id.label(),
             // The clone is not ideal, but currently we can't compare `TypecheckError` directly
             // with an ErrorExpectation. Ideally, we would implement `eq` for all error subtypes,
             // and have the eq with `Error` just dispatch to those sub-eq functions.
@@ -372,10 +393,11 @@ impl std::fmt::Display for ErrorExpectation {
             ImportIoError => "ImportError::IoError".to_owned(),
             EvalBlameError => "EvalError::BlameError".to_owned(),
             EvalTypeError => "EvalError::TypeError".to_owned(),
-            EvalEqError => "EvalError::EqError".to_owned(),
+            EvalIncomparableValues => "EvalError::IncomparableValues".to_owned(),
             EvalOther => "EvalError::Other".to_owned(),
             EvalMergeIncompatibleArgs => "EvalError::MergeIncompatibleArgs".to_owned(),
             EvalNAryPrimopTypeError => "EvalError::NAryPrimopTypeError".to_owned(),
+            EvalUnaryPrimopTypeError => "EvalError::UnaryPrimopTypeError".to_owned(),
             EvalInfiniteRecursion => "EvalError::InfiniteRecursion".to_owned(),
             EvalIllegalPolymorphicTailAccess => {
                 "EvalError::IllegalPolymorphicTailAccess".to_owned()
@@ -387,6 +409,7 @@ impl std::fmt::Display for ErrorExpectation {
                 format!("EvalError::MissingFieldDef({field})")
             }
             EvalNonExhaustiveMatch => "EvalError::NonExhaustiveMatch".to_owned(),
+            EvalNonExhaustiveEnumMatch => "EvalError::NonExhaustiveEnumMatch".to_owned(),
             TypecheckUnboundIdentifier { identifier } => {
                 format!("TypecheckError::UnboundIdentifier({identifier})")
             }
@@ -419,11 +442,14 @@ impl std::fmt::Display for ErrorExpectation {
             TypecheckExtraDynTail => "TypecheckError::ExtraDynTail".to_owned(),
             TypecheckMissingDynTail => "TypecheckError::MissingDynTail".to_owned(),
             TypecheckArrowTypeMismatch { cause } => {
-                format!("TypecheckError::ArrowTypeMismatch{cause})")
+                format!("TypecheckError::ArrowTypeMismatch({cause})")
             }
             TypecheckFlatTypeInTermPosition => "TypecheckError::FlatTypeInTermPosition".to_owned(),
             TypecheckVarLevelMismatch { type_var } => {
                 format!("TypecheckError::VarLevelMismatch({type_var})")
+            }
+            TypecheckOrPatternVarsMismatch { var } => {
+                format!("TypecheckError::OrPatternVarsMismatch({var})")
             }
             SerializeNumberOutOfRange => "ExportError::NumberOutOfRange".to_owned(),
         };

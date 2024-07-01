@@ -374,12 +374,9 @@ impl UniRecord {
                     tail: Box::new(tail),
                 })),
                 _ => {
-                    // Position of identifiers must always be set at this stage
-                    // (parsing)
-                    let span_id = id.pos.unwrap();
-                    let term_pos = field_def.pos.into_opt().unwrap_or(span_id);
                     Err(InvalidRecordTypeError::InvalidField(
-                        RawSpan::fuse(span_id, term_pos).unwrap(),
+                        // Position of identifiers must always be set at this stage (parsing)
+                        id.pos.fuse(field_def.pos).unwrap(),
                     ))
                 }
             }
@@ -418,7 +415,7 @@ impl UniRecord {
                                 FieldPathElem::Ident(id) => id.pos.unwrap(),
                                 FieldPathElem::Expr(rt) => rt.pos.unwrap(),
                             })
-                            .reduce(|acc, span| RawSpan::fuse(acc, span).unwrap_or(acc))
+                            .reduce(|acc, span| acc.fuse(span).unwrap_or(acc))
                             // We already checked that the path is non-empty.
                             .unwrap();
 
@@ -695,6 +692,7 @@ impl FixTypeVars for Type {
             | TypeF::Number
             | TypeF::Bool
             | TypeF::String
+            | TypeF::ForeignId
             | TypeF::Symbol
             | TypeF::Flat(_)
             // We don't fix type variables inside a dictionary contract. A dictionary contract

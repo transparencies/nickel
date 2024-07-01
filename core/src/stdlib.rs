@@ -71,6 +71,7 @@ pub mod internals {
 
     generate_accessor!(num);
     generate_accessor!(bool);
+    generate_accessor!(foreign_id);
     generate_accessor!(string);
     generate_accessor!(fail);
 
@@ -100,6 +101,9 @@ pub mod internals {
     generate_accessor!(dict_dyn);
 
     generate_accessor!(stdlib_contract_equal);
+
+    generate_accessor!(predicate_to_ctr);
+    generate_accessor!(validator_to_ctr);
 
     generate_accessor!(rec_default);
     generate_accessor!(rec_force);

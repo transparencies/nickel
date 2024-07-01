@@ -58,6 +58,14 @@ impl InputFormat {
             _ => None,
         }
     }
+    /// Renturns an [InputFormat] based on the extension of a source path.
+    pub fn from_source_path(source_path: &SourcePath) -> Option<InputFormat> {
+        if let SourcePath::Path(p) = source_path {
+            Self::from_path(p)
+        } else {
+            None
+        }
+    }
 }
 
 /// File and terms cache.
@@ -456,50 +464,10 @@ impl Cache {
         }
     }
 
-    /// Parse a source and populate the corresponding entry in the cache, or do nothing if the
-    /// entry has already been parsed. This function is error tolerant: parts of the source which
-    /// result in parse errors are parsed as [`crate::term::Term::ParseError`] and the
-    /// corresponding error messages are collected and returned.
-    ///
-    /// The `Err` part of the result corresponds to non-recoverable errors.
-    fn parse_lax(&mut self, file_id: FileId) -> Result<CacheOp<ParseErrors>, ParseError> {
-        if let Some(TermEntry { parse_errs, .. }) = self.terms.get(&file_id) {
-            Ok(CacheOp::Cached(parse_errs.clone()))
-        } else {
-            let (term, parse_errs) = self.parse_nocache(file_id)?;
-            self.terms.insert(
-                file_id,
-                TermEntry {
-                    term,
-                    state: EntryState::Parsed,
-                    parse_errs: parse_errs.clone(),
-                },
-            );
-
-            Ok(CacheOp::Done(parse_errs))
-        }
-    }
-
-    /// Parse a source and populate the corresponding entry in the cache, or do
-    /// nothing if the entry has already been parsed. This function is error
-    /// tolerant if `self.error_tolerant` is `true`.
-    pub fn parse(&mut self, file_id: FileId) -> Result<CacheOp<ParseErrors>, ParseErrors> {
-        let result = self.parse_lax(file_id);
-
-        match self.error_tolerance {
-            ErrorTolerance::Tolerant => result.map_err(|err| err.into()),
-            ErrorTolerance::Strict => match result? {
-                CacheOp::Done(e) | CacheOp::Cached(e) if !e.no_errors() => Err(e),
-                CacheOp::Done(_) => Ok(CacheOp::Done(ParseErrors::none())),
-                CacheOp::Cached(_) => Ok(CacheOp::Cached(ParseErrors::none())),
-            },
-        }
-    }
-
     /// Parse a source and populate the corresponding entry in the cache, or do
     /// nothing if the entry has already been parsed. Support multiple formats.
     /// This function is always error tolerant, independently from `self.error_tolerant`.
-    fn parse_multi_lax(
+    fn parse_lax(
         &mut self,
         file_id: FileId,
         format: InputFormat,
@@ -523,12 +491,12 @@ impl Cache {
     /// Parse a source and populate the corresponding entry in the cache, or do
     /// nothing if the entry has already been parsed. Support multiple formats.
     /// This function is error tolerant if `self.error_tolerant` is `true`.
-    pub fn parse_multi(
+    pub fn parse(
         &mut self,
         file_id: FileId,
         format: InputFormat,
     ) -> Result<CacheOp<ParseErrors>, ParseErrors> {
-        let result = self.parse_multi_lax(file_id, format);
+        let result = self.parse_lax(file_id, format);
 
         match self.error_tolerance {
             ErrorTolerance::Tolerant => result.map_err(|err| err.into()),
@@ -607,9 +575,11 @@ impl Cache {
                     ))
                 }
             }
-            InputFormat::Toml => toml::from_str(self.files.source(file_id))
-                .map(|t| (attach_pos(t), ParseErrors::default()))
-                .map_err(|err| (ParseError::from_toml(err, file_id))),
+            InputFormat::Toml => {
+                crate::serialize::toml_deser::from_str(self.files.source(file_id), file_id)
+                    .map(|t| (attach_pos(t), ParseErrors::default()))
+                    .map_err(|err| (ParseError::from_toml(err, file_id)))
+            }
             #[cfg(feature = "nix-experimental")]
             InputFormat::Nix => {
                 let json = nix_ffi::eval_to_json(self.files.source(file_id))
@@ -902,7 +872,12 @@ impl Cache {
     ) -> Result<CacheOp<()>, Error> {
         let mut result = CacheOp::Cached(());
 
-        if let CacheOp::Done(_) = self.parse(file_id)? {
+        let format = self
+            .file_paths
+            .get(&file_id)
+            .and_then(InputFormat::from_source_path)
+            .unwrap_or_default();
+        if let CacheOp::Done(_) = self.parse(file_id, format)? {
             result = CacheOp::Done(());
         }
 
@@ -1040,6 +1015,38 @@ impl Cache {
             .map(|TermEntry { state, .. }| std::mem::replace(state, new))
     }
 
+    /// Remove the cached term associated with this id, and any cached terms
+    /// that import it.
+    ///
+    /// The file contents associated with this id remain, and they will be
+    /// re-parsed if necessary.
+    ///
+    /// This invalidation scheme is probably too aggressive; there are
+    /// situations where a change in one file doesn't require invalidation
+    /// of other files that import it. For example, if the parse status (i.e.
+    /// success/failure) of a file doesn't change, files that import it don't
+    /// need to re-resolve their imports. If the checked type of a file doesn't
+    /// change, files that import it don't need to be re-typechecked.
+    ///
+    /// Returns all the additional (i.e. not including the passed one) file ids
+    /// whose caches were invalidated.
+    pub fn invalidate_cache(&mut self, file_id: FileId) -> Vec<FileId> {
+        fn invalidate_rec(slf: &mut Cache, acc: &mut Vec<FileId>, file_id: FileId) {
+            slf.terms.remove(&file_id);
+            slf.imports.remove(&file_id);
+            let rev_deps = slf.rev_imports.remove(&file_id).unwrap_or_default();
+
+            acc.extend(rev_deps.iter().copied());
+            for f in &rev_deps {
+                invalidate_rec(slf, acc, *f);
+            }
+        }
+
+        let mut ret = vec![];
+        invalidate_rec(self, &mut ret, file_id);
+        ret
+    }
+
     /// Retrieve the state of an entry. Return `None` if the entry is not in the term cache,
     /// meaning that the content of the source has been loaded but has not been parsed yet.
     pub fn entry_state(&self, file_id: FileId) -> Option<EntryState> {
@@ -1134,7 +1141,7 @@ impl Cache {
             .collect();
 
         for (_, file_id) in file_ids.iter() {
-            self.parse(*file_id)?;
+            self.parse(*file_id, InputFormat::Nickel)?;
         }
         self.stdlib_ids.replace(file_ids);
         Ok(CacheOp::Done(()))
@@ -1371,7 +1378,7 @@ impl ImportResolver for Cache {
             self.rev_imports.entry(file_id).or_default().insert(parent);
         }
 
-        self.parse_multi(file_id, format)
+        self.parse(file_id, format)
             .map_err(|err| ImportError::ParseErrors(err, *pos))?;
 
         Ok((result, file_id))

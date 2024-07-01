@@ -1,33 +1,38 @@
 //! Pattern matching and destructuring of Nickel values.
 use std::collections::{hash_map::Entry, HashMap};
 
+use super::{
+    record::{Field, RecordData},
+    NickelString, Number, RichTerm, TypeAnnotation,
+};
+
 use crate::{
-    error::EvalError,
-    identifier::LocIdent,
-    impl_display_from_pretty,
-    label::Label,
-    mk_app,
-    parser::error::ParseError,
+    error::EvalError, identifier::LocIdent, impl_display_from_pretty, parser::error::ParseError,
     position::TermPos,
-    stdlib::internals,
-    term::{
-        record::{Field, RecordAttrs, RecordData},
-        LabeledType, RichTerm, Term, TypeAnnotation,
-    },
-    typ::{Type, TypeF},
 };
 
 pub mod compile;
 
+/// A small helper to generate a
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum PatternData {
+    /// A wildcard pattern, matching any value. As opposed to any, this pattern doesn't bind any
+    /// variable.
+    Wildcard,
     /// A simple pattern consisting of an identifier. Match anything and bind the result to the
-    /// corresponding identfier.
+    /// corresponding identifier.
     Any(LocIdent),
     /// A record pattern as in `{ a = { b, c } }`
     Record(RecordPattern),
+    /// An array pattern as in `[a, b, c]`
+    Array(ArrayPattern),
     /// An enum pattern as in `'Foo x` or `'Foo`
     Enum(EnumPattern),
+    /// A constant pattern as in `42` or `true`.
+    Constant(ConstantPattern),
+    /// A sequence of alternative patterns as in `'Foo _ or 'Bar _ or 'Baz _`.
+    Or(OrPattern),
 }
 
 /// A generic pattern, that can appear in a match expression (not yet implemented) or in a
@@ -98,13 +103,54 @@ pub struct RecordPattern {
     pub patterns: Vec<FieldPattern>,
     /// The tail of the pattern, indicating if the pattern is open, i.e. if it ended with an
     /// ellipsis, capturing the rest or not.
-    pub tail: RecordPatternTail,
+    pub tail: TailPattern,
     pub pos: TermPos,
 }
 
-/// The tail of a record pattern which might capture the rest of the record.
+/// An array pattern.
 #[derive(Debug, PartialEq, Clone)]
-pub enum RecordPatternTail {
+pub struct ArrayPattern {
+    /// The patterns of the elements of the array.
+    pub patterns: Vec<Pattern>,
+    /// The tail of the pattern, indicating if the pattern is open, i.e. if it ended with an
+    /// ellipsis, capturing the rest or not.
+    pub tail: TailPattern,
+    pub pos: TermPos,
+}
+
+impl ArrayPattern {
+    /// Check if this record contract is open, meaning that it accepts additional fields to be
+    /// present, whether the rest is captured or not.
+    pub fn is_open(&self) -> bool {
+        self.tail.is_open()
+    }
+}
+
+/// A constant pattern, matching a constant value.
+#[derive(Debug, PartialEq, Clone)]
+pub struct ConstantPattern {
+    pub data: ConstantPatternData,
+    pub pos: TermPos,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum ConstantPatternData {
+    Bool(bool),
+    Number(Number),
+    String(NickelString),
+    Null,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct OrPattern {
+    pub patterns: Vec<Pattern>,
+    pub pos: TermPos,
+}
+
+/// The tail of a data structure pattern (record or array) which might capture the rest of said
+/// data structure.
+#[derive(Debug, PartialEq, Clone)]
+pub enum TailPattern {
     /// The pattern is closed, i.e. it doesn't allow more fields. For example, `{foo, bar}`.
     Empty,
     /// The pattern ends with an ellipsis, making it open. For example, `{foo, bar, ..}`.
@@ -114,8 +160,16 @@ pub enum RecordPatternTail {
     Capture(LocIdent),
 }
 
+impl TailPattern {
+    /// Check if this tail pattern makes the enclosing data structure pattern open, meaning that it
+    /// accepts additional fields or elements to be present, whether the rest is captured or not.
+    pub fn is_open(&self) -> bool {
+        matches!(self, TailPattern::Open | TailPattern::Capture(_))
+    }
+}
+
 impl RecordPattern {
-    /// Check the matches for duplication, and raise an error if any occur.
+    /// Check the matches for duplication, and raise an error if any occurs.
     ///
     /// Note that for backwards-compatibility reasons this function _only_
     /// checks top-level matches. In Nickel 1.0, this code panicked:
@@ -160,120 +214,14 @@ impl RecordPattern {
     /// Check if this record contract is open, meaning that it accepts additional fields to be
     /// present, whether the rest is captured or not.
     pub fn is_open(&self) -> bool {
-        matches!(
-            self.tail,
-            RecordPatternTail::Open | RecordPatternTail::Capture(_)
-        )
-    }
-}
-
-impl FieldPattern {
-    /// Convert this field pattern to a record field binding with metadata. Used to generate the
-    /// record contract associated to a record pattern.
-    pub fn as_record_binding(&self) -> (LocIdent, Field) {
-        let mut annotation = self.annotation.clone();
-        // If the inner pattern gives rise to a contract, add it the to the field decoration.
-        annotation
-            .contracts
-            .extend(self.pattern.elaborate_contract());
-
-        (self.matched_id, Field::from(annotation))
-    }
-}
-
-// We don't implement elaborate_contract for `FieldPattern`, which is of a slightly different
-// nature (it's a part of a record pattern). Instead, we call to `FieldPattern::as_record_binding`,
-// which takes care of elaborating a field pattern to an appropriate record field.
-pub trait ElaborateContract {
-    /// Elaborate a contract from this pattern. The contract will check both the structure of the
-    /// matched value (e.g. the presence of fields in a record) and incoporate user-provided
-    /// contracts and annotations, as well as default values.
-    ///
-    /// Some patterns don't give rise to any contract (e.g. `Any`), in which case this function
-    /// returns `None`.
-    fn elaborate_contract(&self) -> Option<LabeledType>;
-}
-
-impl ElaborateContract for PatternData {
-    fn elaborate_contract(&self) -> Option<LabeledType> {
-        match self {
-            PatternData::Any(_) => None,
-            PatternData::Record(pat) => pat.elaborate_contract(),
-            PatternData::Enum(pat) => pat.elaborate_contract(),
-        }
-    }
-}
-
-impl ElaborateContract for Pattern {
-    fn elaborate_contract(&self) -> Option<LabeledType> {
-        self.data.elaborate_contract()
-    }
-}
-
-impl ElaborateContract for EnumPattern {
-    fn elaborate_contract(&self) -> Option<LabeledType> {
-        // TODO[adts]: it would be better to simply build a type like `[| 'tag arg |]` or `[| 'tag
-        // |]` and to rely on its derived contract. However, for the time being, the contract
-        // derived from enum variants isn't implemented yet.
-        let contract = if self.pattern.is_some() {
-            mk_app!(internals::enum_variant(), Term::Enum(self.tag))
-        } else {
-            mk_app!(internals::stdlib_contract_equal(), Term::Enum(self.tag))
-        };
-
-        let typ = Type {
-            typ: TypeF::Flat(contract),
-            pos: self.pos,
-        };
-
-        Some(LabeledType {
-            typ: typ.clone(),
-            label: Label {
-                typ: typ.into(),
-                // [^unwrap-span]: We need the position to be defined here. Hopefully,
-                // contract-generating pattern are pattern used in destructuring, and destructuring
-                // patterns aren't currently generated by the Nickel interpreter. So we should only
-                // encounter user-written patterns here, which should have a position.
-                span: self.pos.unwrap(),
-                ..Default::default()
-            },
-        })
-    }
-}
-
-impl ElaborateContract for RecordPattern {
-    fn elaborate_contract(&self) -> Option<LabeledType> {
-        let typ = Type {
-            typ: TypeF::Flat(
-                Term::Record(RecordData::new(
-                    self.patterns
-                        .iter()
-                        .map(FieldPattern::as_record_binding)
-                        .collect(),
-                    RecordAttrs {
-                        open: self.is_open(),
-                        ..Default::default()
-                    },
-                    None,
-                ))
-                .into(),
-            ),
-            pos: self.pos,
-        };
-
-        Some(LabeledType {
-            typ: typ.clone(),
-            label: Label {
-                typ: typ.into(),
-                // unwrap(): cf [^unwrap-span]
-                span: self.pos.unwrap(),
-                ..Default::default()
-            },
-        })
+        self.tail.is_open()
     }
 }
 
 impl_display_from_pretty!(PatternData);
 impl_display_from_pretty!(Pattern);
+impl_display_from_pretty!(ConstantPatternData);
+impl_display_from_pretty!(ConstantPattern);
 impl_display_from_pretty!(RecordPattern);
 impl_display_from_pretty!(EnumPattern);
+impl_display_from_pretty!(ArrayPattern);

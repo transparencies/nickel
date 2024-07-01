@@ -8,7 +8,7 @@ use crate::{
     term::pattern::*,
     term::{
         record::{Field, FieldDeps, RecordDeps},
-        IndexMap, RichTerm, SharedTerm, StrChunk, Term,
+        CustomContract, IndexMap, MatchBranch, RichTerm, SharedTerm, StrChunk, Term,
     },
     typ::{RecordRowF, RecordRows, RecordRowsF, Type, TypeF},
 };
@@ -39,6 +39,7 @@ impl CollectFreeVars for RichTerm {
             | Term::Num(_)
             | Term::Str(_)
             | Term::Lbl(_)
+            | Term::ForeignId(_)
             | Term::SealingKey(_)
             | Term::Enum(_)
             | Term::Import(_)
@@ -87,20 +88,30 @@ impl CollectFreeVars for RichTerm {
                 t2.collect_free_vars(free_vars);
             }
             Term::Match(data) => {
-                for (pat, branch) in data.branches.iter_mut() {
+                for MatchBranch {
+                    pattern,
+                    guard,
+                    body,
+                } in data.branches.iter_mut()
+                {
                     let mut fresh = HashSet::new();
 
-                    branch.collect_free_vars(&mut fresh);
-                    pat.remove_bindings(&mut fresh);
+                    if let Some(guard) = guard {
+                        guard.collect_free_vars(&mut fresh);
+                    }
+                    body.collect_free_vars(&mut fresh);
+
+                    pattern.remove_bindings(&mut fresh);
 
                     free_vars.extend(fresh);
                 }
-
-                if let Some(default) = &mut data.default {
-                    default.collect_free_vars(free_vars);
-                }
             }
-            Term::Op1(_, t) | Term::Sealed(_, t, _) | Term::EnumVariant { arg: t, .. } => {
+            Term::Op1(_, t)
+            | Term::Sealed(_, t, _)
+            | Term::EnumVariant { arg: t, .. }
+            | Term::CustomContract(CustomContract::Predicate(t))
+            | Term::CustomContract(CustomContract::Validator(t))
+            | Term::CustomContract(CustomContract::PartialIdentity(t)) => {
                 t.collect_free_vars(free_vars)
             }
             Term::OpN(_, ts) => {
@@ -190,6 +201,7 @@ impl CollectFreeVars for Type {
             | TypeF::Number
             | TypeF::Bool
             | TypeF::String
+            | TypeF::ForeignId
             | TypeF::Symbol
             | TypeF::Var(_)
             | TypeF::Wildcard(_) => (),
@@ -249,12 +261,12 @@ impl RemoveBindings for PatternData {
             PatternData::Any(id) => {
                 working_set.remove(&id.ident());
             }
-            PatternData::Record(record_pat) => {
-                record_pat.remove_bindings(working_set);
-            }
-            PatternData::Enum(enum_variant_pat) => {
-                enum_variant_pat.remove_bindings(working_set);
-            }
+            PatternData::Record(record_pat) => record_pat.remove_bindings(working_set),
+            PatternData::Array(array_pat) => array_pat.remove_bindings(working_set),
+            PatternData::Enum(enum_variant_pat) => enum_variant_pat.remove_bindings(working_set),
+            PatternData::Or(or_pat) => or_pat.remove_bindings(working_set),
+            // A wildcard pattern or a constant pattern doesn't bind any variable.
+            PatternData::Wildcard | PatternData::Constant(_) => (),
         }
     }
 }
@@ -281,7 +293,19 @@ impl RemoveBindings for RecordPattern {
             m.remove_bindings(working_set);
         }
 
-        if let RecordPatternTail::Capture(rest) = self.tail {
+        if let TailPattern::Capture(rest) = self.tail {
+            working_set.remove(&rest.ident());
+        }
+    }
+}
+
+impl RemoveBindings for ArrayPattern {
+    fn remove_bindings(&self, working_set: &mut HashSet<Ident>) {
+        for m in &self.patterns {
+            m.remove_bindings(working_set);
+        }
+
+        if let TailPattern::Capture(rest) = self.tail {
             working_set.remove(&rest.ident());
         }
     }
@@ -291,6 +315,21 @@ impl RemoveBindings for EnumPattern {
     fn remove_bindings(&self, working_set: &mut HashSet<Ident>) {
         if let Some(ref arg_pat) = self.pattern {
             arg_pat.remove_bindings(working_set);
+        }
+    }
+}
+
+impl RemoveBindings for OrPattern {
+    fn remove_bindings(&self, working_set: &mut HashSet<Ident>) {
+        // Theoretically, we could just remove the bindings of the first pattern, as all
+        // branches in an or patterns should bind exactly the same variables. However, at the
+        // time of writing, this condition isn't enforced at parsing time (it's enforced
+        // during typechecking). It doesn't cost much to be conservative and to remove all
+        // the bindings (removing something non-existent from a hashet is a no-op), so that
+        // we don't miss free variables in the case of ill-formed or-patterns, although we
+        // should ideally rule those out before reaching the free var transformation.
+        for pat in &self.patterns {
+            pat.remove_bindings(working_set);
         }
     }
 }

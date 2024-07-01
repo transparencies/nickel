@@ -5,10 +5,11 @@ use std::{
 };
 
 use codespan::FileId;
+use log::warn;
 use lsp_server::{ErrorCode, ResponseError};
 use lsp_types::Url;
 use nickel_lang_core::{
-    cache::{Cache, CacheError, ErrorTolerance, SourcePath},
+    cache::{Cache, CacheError, ErrorTolerance, InputFormat, SourcePath},
     error::{ImportError, IntoDiagnostics},
     position::{RawPos, RawSpan},
     term::{record::FieldMetadata, RichTerm, Term, UnaryOp},
@@ -84,7 +85,7 @@ impl World {
 
         // Invalidate the cache of every file that tried, but failed, to import a file
         // with a name like this.
-        let mut invalid = path
+        let failed_to_import = path
             .file_name()
             .and_then(|name| self.failed_imports.remove(name))
             .unwrap_or_default();
@@ -93,16 +94,17 @@ impl World {
         // cache if it was imported by an already-open file.
         let file_id = self.cache.replace_string(SourcePath::Path(path), contents);
 
-        // Invalidate any cached inputs that imported the newly-opened file, so that any
-        // cross-file references are updated.
-        invalid.extend(self.cache.get_rev_imports_transitive(file_id));
+        // The cache automatically invalidates reverse-dependencies; we also need
+        // to track them, so that we can clear our own analysis.
+        let mut invalid = failed_to_import.clone();
+        invalid.extend(self.cache.invalidate_cache(file_id));
+
+        for f in failed_to_import {
+            invalid.extend(self.cache.invalidate_cache(f));
+        }
 
         for rev_dep in &invalid {
             self.analysis.remove(*rev_dep);
-            // Reset the cached state (Parsed is the earliest one) so that it will
-            // re-resolve its imports.
-            self.cache
-                .update_state(*rev_dep, nickel_lang_core::cache::EntryState::Parsed);
         }
 
         self.file_uris.insert(file_id, uri);
@@ -117,11 +119,11 @@ impl World {
         &mut self,
         uri: Url,
         contents: String,
-    ) -> anyhow::Result<(FileId, HashSet<FileId>)> {
+    ) -> anyhow::Result<(FileId, Vec<FileId>)> {
         let path = uri_to_path(&uri)?;
         let file_id = self.cache.replace_string(SourcePath::Path(path), contents);
 
-        let invalid = self.cache.get_rev_imports_transitive(file_id);
+        let invalid = self.cache.invalidate_cache(file_id);
         for f in &invalid {
             self.analysis.remove(*f);
         }
@@ -160,7 +162,7 @@ impl World {
         file_id: FileId,
     ) -> Result<Vec<SerializableDiagnostic>, Vec<SerializableDiagnostic>> {
         self.cache
-            .parse(file_id)
+            .parse(file_id, InputFormat::Nickel)
             .map(|nonfatal| self.lsp_diagnostics(file_id, nonfatal.inner()))
             .map_err(|fatal| self.lsp_diagnostics(file_id, fatal))
     }
@@ -257,7 +259,7 @@ impl World {
                             .collect()
                     }
                 }
-                (Term::Op1(UnaryOp::StaticAccess(id), parent), _) => {
+                (Term::Op1(UnaryOp::RecordAccess(id), parent), _) => {
                     let parents = resolver.resolve_record(parent);
                     parents
                         .iter()
@@ -334,7 +336,7 @@ impl World {
                     accesses
                         .into_iter()
                         .filter_map(|access| {
-                            let Term::Op1(UnaryOp::StaticAccess(id), _) = access.as_ref() else {
+                            let Term::Op1(UnaryOp::RecordAccess(id), _) = access.as_ref() else {
                                 return None;
                             };
                             if world.get_defs(&access, None).contains(&span) {
@@ -350,5 +352,14 @@ impl World {
             }
         }
         inner(self, span).unwrap_or_default()
+    }
+
+    pub fn uris(&self, ids: impl IntoIterator<Item = FileId>) -> impl Iterator<Item = &Url> {
+        ids.into_iter().filter_map(|id| {
+            self.file_uris.get(&id).or_else(|| {
+                warn!("no uri for {id:?}");
+                None
+            })
+        })
     }
 }

@@ -192,28 +192,78 @@ pub struct Program<EC: EvalCache> {
     pub field: FieldPath,
 }
 
+/// The Possible Input Sources, anything that a Nickel program can be created from
+pub enum Input<T, S> {
+    /// A filepath
+    Path(S),
+    /// The source is anything that can be Read from, the second argument is the name the source should have in the cache.
+    Source(T, S),
+}
+
 impl<EC: EvalCache> Program<EC> {
     /// Create a program by reading it from the standard input.
     pub fn new_from_stdin(trace: impl Write + 'static) -> std::io::Result<Self> {
         Program::new_from_source(io::stdin(), "<stdin>", trace)
     }
 
-    /// Create program from possibly multiple files. Each input `path` is
-    /// turned into a [`Term::Import`] and the main program will be the
-    /// [`BinaryOp::Merge`] of all the inputs.
-    pub fn new_from_files<I, P>(paths: I, trace: impl Write + 'static) -> std::io::Result<Self>
+    /// Contructor that abstracts over the Input type (file, string, etc.). Used by
+    /// the other constructors. Published for those that need abstraction over the kind of Input.
+    pub fn new_from_input<T, S>(
+        input: Input<T, S>,
+        trace: impl Write + 'static,
+    ) -> std::io::Result<Self>
     where
-        I: IntoIterator<Item = P>,
-        P: Into<OsString>,
+        T: Read,
+        S: Into<OsString>,
     {
         increment!("Program::new");
         let mut cache = Cache::new(ErrorTolerance::Strict);
 
-        let merge_term = paths
+        let main_id = match input {
+            Input::Path(path) => cache.add_file(path)?,
+            Input::Source(source, name) => {
+                let path = PathBuf::from(name.into());
+                cache.add_source(SourcePath::Path(path), source)?
+            }
+        };
+
+        let vm = VirtualMachine::new(cache, trace);
+        Ok(Self {
+            main_id,
+            vm,
+            color_opt: clap::ColorChoice::Auto.into(),
+            overrides: Vec::new(),
+            field: FieldPath::new(),
+        })
+    }
+
+    /// Constructor that abstracts over an iterator of Inputs (file, strings,
+    /// etc). Published for those that need abstraction over the kind of Input
+    /// or want to mix multiple different kinds of Input.
+    pub fn new_from_inputs<I, T, S>(inputs: I, trace: impl Write + 'static) -> std::io::Result<Self>
+    where
+        I: IntoIterator<Item = Input<T, S>>,
+        T: Read,
+        S: Into<OsString>,
+    {
+        increment!("Program::new");
+        let mut cache = Cache::new(ErrorTolerance::Strict);
+
+        let merge_term = inputs
             .into_iter()
-            .map(|f| RichTerm::from(Term::Import(f.into())))
+            .map(|input| match input {
+                Input::Path(path) => RichTerm::from(Term::Import(path.into())),
+                Input::Source(source, name) => {
+                    let path = PathBuf::from(name.into());
+                    cache
+                        .add_source(SourcePath::Path(path.clone()), source)
+                        .unwrap();
+                    RichTerm::from(Term::Import(path.into()))
+                }
+            })
             .reduce(|acc, f| mk_term::op2(BinaryOp::Merge(Label::default().into()), acc, f))
             .unwrap();
+
         let main_id = cache.add_string(
             SourcePath::Generated("main".into()),
             format!("{merge_term}"),
@@ -230,22 +280,29 @@ impl<EC: EvalCache> Program<EC> {
         })
     }
 
+    /// Create program from possibly multiple files. Each input `path` is
+    /// turned into a [`Term::Import`] and the main program will be the
+    /// [`BinaryOp::Merge`] of all the inputs.
+    pub fn new_from_files<I, P>(paths: I, trace: impl Write + 'static) -> std::io::Result<Self>
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<OsString>,
+    {
+        // The File type parameter is a dummy type and not used.
+        // It just needed to be something that implements Read, and File seemed fitting.
+        Self::new_from_inputs(
+            paths.into_iter().map(Input::<std::fs::File, _>::Path),
+            trace,
+        )
+    }
+
     pub fn new_from_file(
         path: impl Into<OsString>,
         trace: impl Write + 'static,
     ) -> std::io::Result<Self> {
-        increment!("Program::new");
-
-        let mut cache = Cache::new(ErrorTolerance::Strict);
-        let main_id = cache.add_file(path)?;
-        let vm = VirtualMachine::new(cache, trace);
-        Ok(Self {
-            main_id,
-            vm,
-            color_opt: clap::ColorChoice::Auto.into(),
-            overrides: Vec::new(),
-            field: FieldPath::new(),
-        })
+        // The File type parameter is a dummy type and not used.
+        // It just needed to be something that implements Read, and File seemed fitting.
+        Self::new_from_input(Input::<std::fs::File, _>::Path(path), trace)
     }
 
     /// Create a program by reading it from a generic source.
@@ -256,22 +313,24 @@ impl<EC: EvalCache> Program<EC> {
     ) -> std::io::Result<Self>
     where
         T: Read,
-        S: Into<OsString> + Clone,
+        S: Into<OsString>,
     {
-        increment!("Program::new");
+        Self::new_from_input(Input::Source(source, source_name), trace)
+    }
 
-        let mut cache = Cache::new(ErrorTolerance::Strict);
-        let path = PathBuf::from(source_name.into());
-        let main_id = cache.add_source(SourcePath::Path(path), source)?;
-        let vm = VirtualMachine::new(cache, trace);
-
-        Ok(Self {
-            main_id,
-            vm,
-            color_opt: clap::ColorChoice::Auto.into(),
-            overrides: Vec::new(),
-            field: FieldPath::new(),
-        })
+    /// Create program from possibly multiple sources. The main program will be
+    /// the [`BinaryOp::Merge`] of all the inputs.
+    pub fn new_from_sources<I, T, S>(
+        sources: I,
+        trace: impl Write + 'static,
+    ) -> std::io::Result<Self>
+    where
+        I: IntoIterator<Item = (T, S)>,
+        T: Read,
+        S: Into<OsString>,
+    {
+        let inputs = sources.into_iter().map(|(s, n)| Input::Source(s, n));
+        Self::new_from_inputs(inputs, trace)
     }
 
     /// Parse an assignment of the form `path.to_field=value` as an override, with the provided
@@ -312,7 +371,7 @@ impl<EC: EvalCache> Program<EC> {
     pub fn parse(&mut self) -> Result<RichTerm, Error> {
         self.vm
             .import_resolver_mut()
-            .parse(self.main_id)
+            .parse(self.main_id, InputFormat::Nickel)
             .map_err(Error::ParseErrors)?;
         Ok(self
             .vm
@@ -437,7 +496,9 @@ impl<EC: EvalCache> Program<EC> {
 
     /// Load, parse, and typecheck the program and the standard library, if not already done.
     pub fn typecheck(&mut self) -> Result<(), Error> {
-        self.vm.import_resolver_mut().parse(self.main_id)?;
+        self.vm
+            .import_resolver_mut()
+            .parse(self.main_id, InputFormat::Nickel)?;
         self.vm.import_resolver_mut().load_stdlib()?;
         let initial_env = self.vm.import_resolver().mk_type_ctxt().expect(
             "program::typecheck(): \
@@ -533,7 +594,6 @@ impl<EC: EvalCache> Program<EC> {
     /// [^missing-field-def]: Because we want to handle partial configurations as well,
     /// [crate::error::EvalError::MissingFieldDef] errors are _ignored_: if this is encountered
     /// when evaluating a field, this field is just left as it is and the evaluation proceeds.
-    #[cfg(feature = "doc")]
     pub fn eval_record_spine(&mut self) -> Result<RichTerm, Error> {
         use crate::eval::Environment;
         use crate::match_sharedterm;
@@ -622,11 +682,11 @@ impl<EC: EvalCache> Program<EC> {
     /// Extract documentation from the program
     #[cfg(feature = "doc")]
     pub fn extract_doc(&mut self) -> Result<doc::ExtractedDocumentation, Error> {
-        use crate::error::ExportError;
+        use crate::error::ExportErrorData;
 
         let term = self.eval_record_spine()?;
         doc::ExtractedDocumentation::extract_from_term(&term).ok_or(Error::ExportError(
-            ExportError::NoDocumentation(term.clone()),
+            ExportErrorData::NoDocumentation(term.clone()).into(),
         ))
     }
 
@@ -664,7 +724,7 @@ impl<EC: EvalCache> Program<EC> {
 
 #[cfg(feature = "doc")]
 mod doc {
-    use crate::error::{Error, ExportError, IOError};
+    use crate::error::{Error, ExportErrorData, IOError};
     use crate::term::{RichTerm, Term};
     use comrak::arena_tree::NodeEdge;
     use comrak::nodes::{
@@ -692,6 +752,14 @@ mod doc {
         contracts: Vec<String>,
         /// Rendered documentation, if any
         documentation: Option<String>,
+    }
+
+    fn ast_node<'a>(val: NodeValue) -> AstNode<'a> {
+        // comrak allows for ast nodes to be tagged with source location. This location
+        // isn't need for rendering; it seems to be mainly for plugins to use. Since our
+        // markdown is generated anyway, we just stick in a dummy value.
+        let pos = comrak::nodes::LineColumn::from((0, 0));
+        AstNode::new(std::cell::RefCell::new(Ast::new(val, pos)))
     }
 
     impl ExtractedDocumentation {
@@ -744,11 +812,11 @@ mod doc {
 
         pub fn write_json(&self, out: &mut dyn Write) -> Result<(), Error> {
             serde_json::to_writer(out, self)
-                .map_err(|e| Error::ExportError(ExportError::Other(e.to_string())))
+                .map_err(|e| Error::ExportError(ExportErrorData::Other(e.to_string()).into()))
         }
 
         pub fn write_markdown(&self, out: &mut dyn Write) -> Result<(), Error> {
-            let document = AstNode::from(NodeValue::Document);
+            let document = ast_node(NodeValue::Document);
 
             // Our nodes in the Markdown document are owned by this arena
             let arena = Arena::new();
@@ -788,8 +856,6 @@ mod doc {
                         field.contracts.as_ref(),
                     ))
                 }
-
-                document.append(arena.alloc(AstNode::from(NodeValue::LineBreak)));
 
                 if let Some(ref doc) = field.documentation {
                     document.append(parse_markdown_string(header_level + 1, arena, doc, options));
@@ -839,12 +905,12 @@ mod doc {
         header_level: u8,
         arena: &'a Arena<AstNode<'a>>,
     ) -> &'a AstNode<'a> {
-        let res = arena.alloc(AstNode::from(NodeValue::Heading(NodeHeading {
+        let res = arena.alloc(ast_node(NodeValue::Heading(NodeHeading {
             level: header_level,
             setext: false,
         })));
 
-        let code = arena.alloc(AstNode::from(NodeValue::Code(NodeCode {
+        let code = arena.alloc(ast_node(NodeValue::Code(NodeCode {
             num_backticks: 1,
             literal: ident.into(),
         })));
@@ -860,7 +926,7 @@ mod doc {
         typ: Option<&'a str>,
         contracts: &'a [String],
     ) -> &'a AstNode<'a> {
-        let list = arena.alloc(AstNode::from(NodeValue::List(NodeList {
+        let list = arena.alloc(ast_node(NodeValue::List(NodeList {
             list_type: ListType::Bullet,
             marker_offset: 1,
             padding: 0,
@@ -887,7 +953,7 @@ mod doc {
         typ: &str,
         arena: &'a Arena<AstNode<'a>>,
     ) -> &'a AstNode<'a> {
-        let list_item = arena.alloc(AstNode::from(NodeValue::Item(NodeList {
+        let list_item = arena.alloc(ast_node(NodeValue::Item(NodeList {
             list_type: ListType::Bullet,
             marker_offset: 1,
             padding: 0,
@@ -897,10 +963,22 @@ mod doc {
             tight: true,
         })));
 
-        list_item.append(arena.alloc(AstNode::from(NodeValue::Code(NodeCode {
+        // We have to wrap the content of the list item into a paragraph, otherwise the list won't
+        // be properly separated from the next block coming after it, producing invalid output (for
+        // example, the beginning of the documenantation of the current field might be merged with
+        // the last type or contract item).
+        //
+        // We probably shouldn't have to, but afer diving into comrak's rendering engine, it seems
+        // that some subtle interactions make things work correctly for parsed markdown (as opposed to
+        // this one being programmatically generated) just because list items are always parsed as
+        // paragraphs. We thus mimic this unspoken invariant here.
+        let paragraph = arena.alloc(ast_node(NodeValue::Paragraph));
+
+        paragraph.append(arena.alloc(ast_node(NodeValue::Code(NodeCode {
             literal: format!("{ident} {separator} {typ}"),
             num_backticks: 1,
         }))));
+        list_item.append(paragraph);
 
         list_item
     }

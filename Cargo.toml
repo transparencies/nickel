@@ -11,7 +11,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.5.0"
+version = "1.7.0"
 authors = ["The Nickel Team <nickel-lang@protonmail.com>"]
 license = "MIT"
 edition = "2021"
@@ -21,7 +21,7 @@ homepage = "https://nickel-lang.org"
 readme = "README.md"
 
 [workspace.dependencies]
-nickel-lang-core = { version = "0.6.0", path = "./core", default-features = false }
+nickel-lang-core = { version = "0.8.0", path = "./core", default-features = false }
 nickel-lang-utils = { version = "0.1.0", path = "./utils" }
 lsp-harness = { version = "0.1.0", path = "./lsp/lsp-harness" }
 
@@ -42,7 +42,7 @@ clap = "4.3"
 clap_complete = "4.3.2"
 codespan = { version = "0.11", features = ["serialization"] }
 codespan-reporting = { version = "0.11", features = ["serialization"] }
-comrak = "0.17.0"
+comrak = "0.24.0"
 criterion = "0.4"
 crossbeam = "0.8.4"
 csv = "1"
@@ -55,10 +55,9 @@ git-version = "0.3.5"
 indexmap = "1.9.3"
 indoc = "2"
 insta = "1.29.0"
-ipc-channel = "0.18.0"
 js-sys = "0.3"
-lalrpop = "0.19.9"
-lalrpop-util = "0.19.9"
+lalrpop = "0.20.2"
+lalrpop-util = "0.20.2"
 lazy_static = "1"
 log = "0.4"
 logos = "0.12"
@@ -77,11 +76,13 @@ pyo3-build-config = "0.17.3"
 regex = "1"
 rustyline = "11.0"
 rustyline-derive = "0.8.0"
+scopeguard = "1.2.0"
 serde = "1.0.164"
 serde_json = "1.0.96"
 serde_repr = "0.1"
 serde-wasm-bindgen = "0.5.0"
 serde_yaml = "0.9.19"
+serde-untagged = "0.1"
 sha-1 = "0.10.0"
 sha2 = "0.10.6"
 similar = "2.2.1"
@@ -90,7 +91,7 @@ strip-ansi-escapes = "0.2.0"
 termimad = "0.23.1"
 test-generator = "0.3.1"
 thiserror = "1.0.44"
-toml = "0.7.2"
+toml = "0.8"
 typed-arena = "2.0.2"
 unicode-segmentation = "1.10.1"
 void = "1"
@@ -98,8 +99,18 @@ void = "1"
 metrics = "0.21"
 metrics-util = "0.15"
 
-topiary-core = { git = "https://github.com/tweag/topiary.git", rev = "614abf5d1a5cc3118c9687e18dc1c70a00c3e686", package = "topiary-core" }
-topiary-queries = { git = "https://github.com/tweag/topiary.git", rev = "9ae9ef49c2fa968d15107b817864ff6627e0983e", package = "topiary-queries", default-features = false, features = ["nickel"] }
-# This should be kept in sync with the revision in topiary
-tree-sitter-nickel = { git = "https://github.com/nickel-lang/tree-sitter-nickel", rev = "091b5dcc7d138901bcc162da9409c0bb626c0d27" }
+topiary-core = "0.4.0"
+topiary-queries = { version = "0.4.1", default-features = false, features = ["nickel"] }
+# This version should agree with the topiary-query version: Nickel queries
+# target a specific version of the Nickel grammar (though that dependency
+# doesn't appear explicitly in `topiary-queries`'s Cargo.toml file). For now you
+# might have to look at Topiary's commit messages, but in a near future, we'll
+# try to make this data more accessible, e.g. in the query file
+tree-sitter-nickel = "0.2.0"
 tempfile = "3.5.0"
+
+[profile.dev.package.lalrpop]
+opt-level = 3
+
+[profile.release.package.lalrpop]
+opt-level = 3

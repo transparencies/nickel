@@ -79,13 +79,6 @@ pub enum StringEndDelimiter {
     Special,
 }
 
-/// Distinguish between a normal case `id => exp` and a default case `_ => exp`.
-#[derive(Clone, Debug)]
-pub enum MatchCase {
-    Normal(Pattern, RichTerm),
-    Default(RichTerm),
-}
-
 /// Left hand side of a record field declaration.
 #[derive(Clone, Debug)]
 pub enum FieldPathElem {
@@ -157,7 +150,7 @@ impl FieldDef {
 
                 // `RawSpan::fuse` only returns `None` when the two spans are in different files.
                 // A record field and its value *must* be in the same file, so this is safe.
-                let pos = TermPos::Original(RawSpan::fuse(id_span, acc_span).unwrap());
+                let pos = TermPos::Original(id_span.fuse(acc_span).unwrap());
 
                 match path_elem {
                     FieldPathElem::Ident(id) => {
@@ -251,7 +244,7 @@ impl InfixOp {
             // We treat `UnaryOp::BoolAnd` and `UnaryOp::BoolOr` separately.
             // They should morally be binary operators, but we represent them as unary
             // operators internally so that their second argument is evaluated lazily.
-            InfixOp::Unary(op @ UnaryOp::BoolAnd()) | InfixOp::Unary(op @ UnaryOp::BoolOr()) => {
+            InfixOp::Unary(op @ UnaryOp::BoolAnd) | InfixOp::Unary(op @ UnaryOp::BoolOr) => {
                 mk_fun!(
                     "x1",
                     "x2",
@@ -439,11 +432,11 @@ impl From<FieldMetadata> for FieldExtAnnot {
 pub fn mk_access(access: RichTerm, root: RichTerm) -> RichTerm {
     if let Some(label) = access.as_ref().try_str_chunk_as_static_str() {
         mk_term::op1(
-            UnaryOp::StaticAccess(LocIdent::new_with_pos(label, access.pos)),
+            UnaryOp::RecordAccess(LocIdent::new_with_pos(label, access.pos)),
             root,
         )
     } else {
-        mk_term::op2(BinaryOp::DynAccess(), access, root)
+        mk_term::op2(BinaryOp::RecordGet, access, root)
     }
 }
 
@@ -644,9 +637,9 @@ pub fn mk_let(
     }
 }
 
-/// Generate a `Fun` or a `FunPattern` (depending on `assgn` having a pattern or not)
-/// from the parsing of a function definition. This function panics if the definition
-/// somehow has neither an `Ident` nor a non-`Empty` `Destruct` pattern.
+/// Generate a `Fun` (when the pattern is trivial) or a `FunPattern` from the parsing of a function
+/// definition. This function panics if the definition somehow has neither an `Ident` nor a
+/// non-`Empty` `Destruct` pattern.
 pub fn mk_fun(pat: Pattern, body: RichTerm) -> Term {
     match pat.data {
         PatternData::Any(id) => Term::Fun(id, body),

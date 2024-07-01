@@ -60,8 +60,8 @@ use crate::{
     identifier::{Ident, LocIdent},
     stdlib as nickel_stdlib,
     term::{
-        pattern::Pattern, record::Field, LabeledType, RichTerm, StrChunk, Term, Traverse,
-        TraverseOrder, TypeAnnotation,
+        record::Field, CustomContract, LabeledType, MatchBranch, RichTerm, StrChunk, Term,
+        Traverse, TraverseOrder, TypeAnnotation,
     },
     typ::*,
     {mk_uty_arrow, mk_uty_enum, mk_uty_record, mk_uty_record_row},
@@ -224,9 +224,12 @@ impl<E: TermEnvironment> VarLevelUpperBound for GenericUnifType<E> {
 impl<E: TermEnvironment> VarLevelUpperBound for GenericUnifTypeUnrolling<E> {
     fn var_level_upper_bound(&self) -> VarLevel {
         match self {
-            TypeF::Dyn | TypeF::Bool | TypeF::Number | TypeF::String | TypeF::Symbol => {
-                VarLevel::NO_VAR
-            }
+            TypeF::Dyn
+            | TypeF::Bool
+            | TypeF::Number
+            | TypeF::String
+            | TypeF::ForeignId
+            | TypeF::Symbol => VarLevel::NO_VAR,
             TypeF::Arrow(domain, codomain) => max(
                 domain.var_level_upper_bound(),
                 codomain.var_level_upper_bound(),
@@ -1440,6 +1443,7 @@ fn walk<V: TypecheckVisitor>(
         | Term::Str(_)
         | Term::Lbl(_)
         | Term::Enum(_)
+        | Term::ForeignId(_)
         | Term::SealingKey(_)
         // This function doesn't recursively typecheck imports: this is the responsibility of the
         // caller.
@@ -1462,7 +1466,9 @@ fn walk<V: TypecheckVisitor>(
                 })
         }
         Term::Fun(id, t) => {
-            // The parameter of an unannotated function is always assigned type `Dyn`.
+            // The parameter of an unannotated function is always assigned type `Dyn`, unless the
+            // function is directly annotated with a function contract (see the special casing in
+            // `walk_with_annot`).
             ctxt.type_env.insert(id.ident(), mk_uniftype::dynamic());
             walk(state, ctxt, visitor, t)
         }
@@ -1532,11 +1538,11 @@ fn walk<V: TypecheckVisitor>(
             walk(state, ctxt, visitor, t)
         }
         Term::Match(data) => {
-            data.branches.iter().try_for_each(|(pat, branch)| {
+            data.branches.iter().try_for_each(|MatchBranch { pattern, guard, body }| {
                 let mut local_ctxt = ctxt.clone();
-                let PatternTypeData { bindings: pat_bindings, .. } = pat.data.pattern_types(state, &ctxt, pattern::TypecheckMode::Walk)?;
+                let PatternTypeData { bindings: pat_bindings, .. } = pattern.data.pattern_types(state, &ctxt, pattern::TypecheckMode::Walk)?;
 
-                if let Some(alias) = &pat.alias {
+                if let Some(alias) = &pattern.alias {
                     visitor.visit_ident(alias, mk_uniftype::dynamic());
                     local_ctxt.type_env.insert(alias.ident(), mk_uniftype::dynamic());
                 }
@@ -1546,12 +1552,12 @@ fn walk<V: TypecheckVisitor>(
                     local_ctxt.type_env.insert(id.ident(), typ);
                 }
 
-                walk(state, local_ctxt, visitor, branch)
-            })?;
+                if let Some(guard) = guard {
+                    walk(state, local_ctxt.clone(), visitor, guard)?;
+                }
 
-            if let Some(default) = &data.default {
-                walk(state, ctxt, visitor, default)?;
-            }
+                walk(state, local_ctxt, visitor, body)
+            })?;
 
             Ok(())
         }
@@ -1591,8 +1597,12 @@ fn walk<V: TypecheckVisitor>(
                     walk(state, ctxt.clone(), visitor, t)
                 })
         }
-        Term::EnumVariant { arg: t, ..} => walk(state, ctxt, visitor, t),
-        Term::Op1(_, t) => walk(state, ctxt.clone(), visitor, t),
+        Term::EnumVariant { arg: t, ..}
+        | Term::Sealed(_, t, _)
+        | Term::Op1(_, t)
+        | Term::CustomContract(CustomContract::Predicate(t))
+        | Term::CustomContract(CustomContract::Validator(t))
+        | Term::CustomContract(CustomContract::PartialIdentity(t)) => walk(state, ctxt.clone(), visitor, t),
         Term::Op2(_, t1, t2) => {
             walk(state, ctxt.clone(), visitor, t1)?;
             walk(state, ctxt, visitor, t2)
@@ -1611,7 +1621,6 @@ fn walk<V: TypecheckVisitor>(
         Term::Annotated(annot, rt) => {
             walk_annotated(state, ctxt, visitor, annot, rt)
         }
-        Term::Sealed(_, t, _) => walk(state, ctxt, visitor, t),
         Term::Type(ty) => walk_type(state, ctxt, visitor, ty),
         Term::Closure(_) => unreachable!("should never see a closure at typechecking time"),
    }
@@ -1630,6 +1639,7 @@ fn walk_type<V: TypecheckVisitor>(
        | TypeF::Number
        | TypeF::Bool
        | TypeF::String
+       | TypeF::ForeignId
        | TypeF::Symbol
        // Currently, the parser can't generate unbound type variables by construction. Thus we
        // don't check here for unbound type variables again.
@@ -1698,7 +1708,7 @@ fn walk_annotated<V: TypecheckVisitor>(
 /// type or contract annotation. A type annotation switches the typechecking mode to _enforce_.
 fn walk_with_annot<V: TypecheckVisitor>(
     state: &mut State,
-    ctxt: Context,
+    mut ctxt: Context,
     visitor: &mut V,
     annot: &TypeAnnotation,
     value: Option<&RichTerm>,
@@ -1718,10 +1728,40 @@ fn walk_with_annot<V: TypecheckVisitor>(
             let uty2 = UnifType::from_type(ty2.clone(), &ctxt.term_env);
             check(state, ctxt, visitor, value, uty2)
         }
-        (_, Some(value)) => walk(state, ctxt, visitor, value),
-        // TODO: we might have something to do with the visitor to clear the current
-        // metadata. It looks like it may be unduly attached to the next field definition,
-        // which is not critical, but still a bug.
+        (
+            TypeAnnotation {
+                typ: None,
+                contracts,
+            },
+            Some(value),
+        ) => {
+            // If we see a function annotated with a function contract, we can get the type of the
+            // argument for free. We use this information both for typechecking (you could see it
+            // as an extension of the philosophy of apparent types, but for function arguments
+            // instead of let-bindings) and for the LSP, to provide better type information and
+            // completion.
+            if let Term::Fun(id, body) = value.as_ref() {
+                // We look for the first contract of the list that is a function contract.
+                let fst_domain = contracts.iter().find_map(|c| {
+                    if let TypeF::Arrow(domain, _) = &c.typ.typ {
+                        Some(UnifType::from_type(domain.as_ref().clone(), &ctxt.term_env))
+                    } else {
+                        None
+                    }
+                });
+
+                if let Some(domain) = fst_domain {
+                    // Because the normal code path in `walk` sets the function argument to `Dyn`,
+                    // we need to short-circuit it. We manually visit the argument, augment the
+                    // typing environment and walk the body of the function.
+                    visitor.visit_ident(id, domain.clone());
+                    ctxt.type_env.insert(id.ident(), domain);
+                    return walk(state, ctxt, visitor, body);
+                }
+            }
+
+            walk(state, ctxt, visitor, value)
+        }
         _ => Ok(()),
     }
 }
@@ -1789,8 +1829,8 @@ fn check<V: TypecheckVisitor>(
     // When checking against a polymorphic type, we immediatly instantiate potential heading
     // foralls. Otherwise, this polymorphic type wouldn't unify much with other types. If we infer
     // a polymorphic type for `rt`, the subsumption rule will take care of instantiating this type
-    // with unification variables, such that terms like
-    // `(fun x => x : forall a. a -> a) : forall b. b -> b` typecheck correctly.
+    // with unification variables, such that terms like `(fun x => x : forall a. a -> a) : forall
+    // b. b -> b` typecheck correctly.
     let ty = instantiate_foralls(state, &mut ctxt, ty, ForallInst::Constant);
 
     match t.as_ref() {
@@ -1846,7 +1886,7 @@ fn check<V: TypecheckVisitor>(
                 pat.data
                     .pattern_types(state, &ctxt, pattern::TypecheckMode::Enforce)?;
             // In the destructuring case, there's no alternative pattern, and we must thus
-            // immediatly close all the row types.
+            // immediately close all the row types.
             pattern::close_all_enums(pat_types.enum_open_tails, state);
 
             let src = pat_types.typ;
@@ -1866,6 +1906,66 @@ fn check<V: TypecheckVisitor>(
             ty.unify(arr, state, &ctxt)
                 .map_err(|err| err.into_typecheck_err(state, rt.pos))?;
             check(state, ctxt, visitor, t, trg)
+        }
+        // [^predicate-is-check]: [crate::term::Contract::Predicate] isn't supposed to be used in
+        // Nickel source code directly, but we can typecheck it. A predicate is a thin wrapper
+        // around a specific function class (of type `Dyn -> Bool`), which turns it into a generic
+        // custom contract (currently represented as `Dyn`).
+        //
+        // One can see it as the application of a `from_predicate` constructor:
+        // `%contract/from_predicate% <t>`.
+        //
+        // It's thus not entirely obvious if this should be a checking or a infer rule: if seen as
+        // a simple function application, it should be infer (it's an elimination rule). If seen as
+        // a type constructor, it should be check (it's an introduction rule). We pick the last
+        // interpretation, because although `Predicate` is built from an application of
+        // `from_predicate`, it's not the same thing - in particular [Contract::Predicate] has been
+        // reduced to a (weak head) normal form, and put in a separate node. Thus we lean toward a
+        // check rule.
+        //
+        // Additionally, because this rule can't produce a polymorphic type (it produces a `Dyn`,
+        // or morally a `Contract` type, if we had one), we don't lose anything by making it a
+        // check rule, as for e.g. literals.
+        Term::CustomContract(CustomContract::Predicate(t)) => {
+            // The overall type of a custom contract is currently `Dyn`, as we don't have a better
+            // one.
+            ty.unify(mk_uniftype::dynamic(), state, &ctxt)
+                .map_err(|err| err.into_typecheck_err(state, rt.pos))?;
+
+            // A predicate must be of type `Dyn -> Bool`.
+            check(
+                state,
+                ctxt,
+                visitor,
+                t,
+                mk_uniftype::arrow(mk_uniftype::dynamic(), mk_uniftype::bool()),
+            )
+        }
+        Term::CustomContract(CustomContract::Validator(t)) => {
+            // The overall type of a custom contract is currently `Dyn`, as we don't have a better
+            // one.
+            ty.unify(mk_uniftype::dynamic(), state, &ctxt)
+                .map_err(|err| err.into_typecheck_err(state, rt.pos))?;
+
+            check(state, ctxt, visitor, t, operation::validator_type())
+        }
+        // See [^predicate-is-check]. We took `Predicate` as an example, but this reasoning applies
+        // to other kind of custom contracts, such as `PartialIdentity`.
+        Term::CustomContract(CustomContract::PartialIdentity(t)) => {
+            // The overall type of a custom contract is currently `Dyn`, as we don't have a better
+            // one.
+            ty.unify(mk_uniftype::dynamic(), state, &ctxt)
+                .map_err(|err| err.into_typecheck_err(state, rt.pos))?;
+
+            // The type of the implementation of a custom contract is `Label -> Dyn -> Dyn` (but
+            // remember that we don't actually have a `Label` type).
+            let partial_id_type = mk_uty_arrow!(
+                mk_uniftype::dynamic(),
+                mk_uniftype::dynamic(),
+                mk_uniftype::dynamic()
+            );
+
+            check(state, ctxt, visitor, t, partial_id_type)
         }
         Term::Array(terms, _) => {
             let ty_elts = state.table.fresh_type_uvar(ctxt.var_level);
@@ -1967,18 +2067,21 @@ fn check<V: TypecheckVisitor>(
             // introduced to open enum rows and close the corresponding rows at the end of the
             // procedure).
 
-            // We zip the pattern types with each case
+            // We zip the pattern types with each branch
             let with_pat_types = data
                 .branches
                 .iter()
-                .map(|(pat, branch)| -> Result<_, TypecheckError> {
+                .map(|branch| -> Result<_, TypecheckError> {
                     Ok((
-                        pat,
-                        pat.pattern_types(state, &ctxt, pattern::TypecheckMode::Enforce)?,
                         branch,
+                        branch.pattern.pattern_types(
+                            state,
+                            &ctxt,
+                            pattern::TypecheckMode::Enforce,
+                        )?,
                     ))
                 })
-                .collect::<Result<Vec<(&Pattern, PatternTypeData<_>, &RichTerm)>, _>>()?;
+                .collect::<Result<Vec<(&MatchBranch, PatternTypeData<_>)>, _>>()?;
 
             // A match expression is a special kind of function. Thus it's typed as `a -> b`, where
             // `a` is a type determined by the patterns and `b` is the type of each match arm.
@@ -1986,9 +2089,17 @@ fn check<V: TypecheckVisitor>(
             let return_type = state.table.fresh_type_uvar(ctxt.var_level);
 
             // Express the constraint that all the arms of the match expression should have a
-            // compatible type.
-            for (pat, pat_types, arm) in with_pat_types.iter() {
-                if let Some(alias) = &pat.alias {
+            // compatible type and that each guard must be a boolean.
+            for (
+                MatchBranch {
+                    pattern,
+                    guard,
+                    body,
+                },
+                pat_types,
+            ) in with_pat_types.iter()
+            {
+                if let Some(alias) = &pattern.alias {
                     visitor.visit_ident(alias, return_type.clone());
                     ctxt.type_env.insert(alias.ident(), return_type.clone());
                 }
@@ -1998,16 +2109,14 @@ fn check<V: TypecheckVisitor>(
                     ctxt.type_env.insert(id.ident(), typ.clone());
                 }
 
-                check(state, ctxt.clone(), visitor, arm, return_type.clone())?;
+                if let Some(guard) = guard {
+                    check(state, ctxt.clone(), visitor, guard, mk_uniftype::bool())?;
+                }
+
+                check(state, ctxt.clone(), visitor, body, return_type.clone())?;
             }
 
-            if let Some(default) = &data.default {
-                check(state, ctxt.clone(), visitor, default, return_type.clone())?;
-            }
-
-            let pat_types = with_pat_types
-                .into_iter()
-                .map(|(_, pat_types, _)| pat_types);
+            let pat_types = with_pat_types.into_iter().map(|(_, pat_types)| pat_types);
 
             // Unify all the pattern types with the argument's type, and build the list of all open
             // tail vars
@@ -2015,6 +2124,14 @@ fn check<V: TypecheckVisitor>(
                 pat_types
                     .clone()
                     .map(|pat_type| pat_type.enum_open_tails.len())
+                    .sum(),
+            );
+
+            // Build the list of all wildcard pattern occurrences
+            let mut wildcard_occurrences = HashSet::with_capacity(
+                pat_types
+                    .clone()
+                    .map(|pat_type| pat_type.wildcard_occurrences.len())
                     .sum(),
             );
 
@@ -2032,17 +2149,16 @@ fn check<V: TypecheckVisitor>(
                     }
 
                     enum_open_tails.extend(pat_type.enum_open_tails);
+                    wildcard_occurrences.extend(pat_type.wildcard_occurrences);
 
                     Ok(())
                 });
 
-            if data.default.is_some() {
-                // If there is a default value, we don't close the potential top-level enum type
-                pattern::close_enums(enum_open_tails, |path| !path.is_empty(), state);
-            } else {
-                pattern::close_all_enums(enum_open_tails, state);
-            }
+            // Once we have accumulated all the information about enum rows and wildcard
+            // occurrences, we can finally close the tails that need to be.
+            pattern::close_enums(enum_open_tails, &wildcard_occurrences, state);
 
+            // And finally fail if there was an error.
             pat_unif_result.map_err(|err| err.into_typecheck_err(state, rt.pos))?;
 
             // We unify the expected type of the match expression with `arg_type -> return_type`.
@@ -2062,7 +2178,9 @@ fn check<V: TypecheckVisitor>(
             // as desired.
             //
             // As a safety net, the tail closing code panics (in debug mode) if it finds a rigid
-            // type variable at the end of the tail of a pattern type.
+            // type variable at the end of the tail of a pattern type, which would happen if we
+            // somehow generalized an enum row type variable before properly closing the tails
+            // before.
             ty.unify(
                 mk_uty_arrow!(arg_type.clone(), return_type.clone()),
                 state,
@@ -2115,7 +2233,6 @@ fn check<V: TypecheckVisitor>(
             ty.unify(mk_uniftype::dict(ty_dict.clone()), state, &ctxt)
                 .map_err(|err| err.into_typecheck_err(state, rt.pos))?;
 
-            //TODO: should we insert in the environment the checked type, or the actual type?
             for id in record.fields.keys() {
                 ctxt.type_env.insert(id.ident(), ty_dict.clone());
                 visitor.visit_ident(id, ty_dict.clone())
@@ -2136,9 +2253,36 @@ fn check<V: TypecheckVisitor>(
             //
             // Fields defined by interpolation are ignored, because they can't be referred to
             // recursively.
+
+            // When we build the recursive environment, there are two different possibilities for
+            // each field:
+            //
+            // 1. The field is annotated. In this case, we use this type to build the type
+            //    environment. We don't need to do any additional check that the field respects
+            //    this annotation: this will be handled by `check_field` when processing the field.
+            // 2. The field isn't annotated. We are going to infer a concrete type later, but for
+            //    now, we allocate a fresh unification variable in the type environment. In this
+            //    case, once we have inferred an actual type for this field, we need to unify
+            //    what's inside the environment with the actual type to ensure that they agree.
+            //
+            //  `need_unif_step` stores the list of fields corresponding to the case 2, which
+            //  require this additional unification step. Note that performing the additional
+            //  unification in case 1. should be harmless, but it's wasteful, and is also not
+            //  entirely trivial because of polymorphism (we need to make sure to instantiate
+            //  polymorphic type annotations). So it's simpler to just skip it in this case.
+            let mut need_unif_step = HashSet::new();
             if let Term::RecRecord(..) = t.as_ref() {
                 for (id, field) in &record.fields {
-                    let uty = field_type(state, field, &ctxt, true);
+                    let uty_apprt =
+                        field_apparent_type(field, Some(&ctxt.type_env), Some(state.resolver));
+
+                    // `Approximated` corresponds to the case where the type isn't obvious
+                    // (annotation or constant), and thus to case 2. above
+                    if matches!(uty_apprt, ApparentType::Approximated(_)) {
+                        need_unif_step.insert(*id);
+                    }
+
+                    let uty = apparent_or_infer(state, uty_apprt, &ctxt, true);
                     ctxt.type_env.insert(id.ident(), uty.clone());
                     visitor.visit_ident(id, uty);
                 }
@@ -2179,7 +2323,13 @@ fn check<V: TypecheckVisitor>(
                     .map_err(|err| err.into_typecheck_err(state, rt.pos))?;
 
                 for (id, field) in record.fields.iter() {
-                    if let Term::RecRecord(..) = t.as_ref() {
+                    // For a recursive record and a field which requires the additional unification
+                    // step (whose type wasn't known when building the recursive environment), we
+                    // unify the actual type with the type affected in the typing environment
+                    // (which started as a fresh unification variable, but might have been unified
+                    // with a more concrete type if the current field has been used recursively
+                    // from other fields).
+                    if matches!(t.as_ref(), Term::RecRecord(..)) && need_unif_step.contains(id) {
                         let affected_type = ctxt.type_env.get(&id.ident()).cloned().unwrap();
 
                         field_types
@@ -2214,6 +2364,9 @@ fn check<V: TypecheckVisitor>(
             }
         }
 
+        Term::ForeignId(_) => ty
+            .unify(mk_uniftype::foreign_id(), state, &ctxt)
+            .map_err(|err| err.into_typecheck_err(state, rt.pos)),
         Term::SealingKey(_) => ty
             .unify(mk_uniftype::sym(), state, &ctxt)
             .map_err(|err| err.into_typecheck_err(state, rt.pos)),
@@ -2248,16 +2401,17 @@ fn check<V: TypecheckVisitor>(
 
 /// Change from inference mode to checking mode, and apply a potential subsumption rule.
 ///
-/// Currently, there is no subtyping (until RFC004 is implemented), hence this function performs
+/// Currently, there is record/dictionary subtyping, if we are not in this case we fallback to perform
 /// polymorphic type instantiation with unification variable on the left (on the inferred type),
-/// and then simply performs unification (put differently, the subtyping relation is the equality
+/// and then simply performs unification (put differently, the subtyping relation when it is not
+/// a record/dictionary subtyping is the equality
 /// relation).
 ///
 /// The type instantiation corresponds to the zero-ary case of application in the current
 /// specification (which is based on [A Quick Look at Impredicativity][quick-look], although we
 /// currently don't support impredicative polymorphism).
 ///
-/// In the future, this function might implement a non-trivial subsumption rule.
+/// In the future, this function might implement a other non-trivial subsumption rule.
 ///
 /// [quick-look]: https://www.microsoft.com/en-us/research/uploads/prod/2020/01/quick-look-icfp20-fixed.pdf
 pub fn subsumption(
@@ -2267,7 +2421,46 @@ pub fn subsumption(
     checked: UnifType,
 ) -> Result<(), UnifError> {
     let inferred_inst = instantiate_foralls(state, &mut ctxt, inferred, ForallInst::UnifVar);
-    checked.unify(inferred_inst, state, &ctxt)
+    match (&inferred_inst, &checked) {
+        (
+            UnifType::Concrete {
+                typ: TypeF::Record(rrows),
+                ..
+            },
+            UnifType::Concrete {
+                typ: TypeF::Dict { type_fields, .. },
+                ..
+            },
+        ) => {
+            for row in rrows.iter() {
+                match row {
+                    GenericUnifRecordRowsIteratorItem::Row(a) => {
+                        subsumption(state, ctxt.clone(), a.typ.clone(), *type_fields.clone())?
+                    }
+                    GenericUnifRecordRowsIteratorItem::TailUnifVar { id, .. } =>
+                    // We don't need to perform any variable level checks when unifying a free
+                    // unification variable with a ground type
+                    // We close the tail because there is no garanty that
+                    // { a : Number, b : Number, _ : a?} <= { _ : Number}
+                    {
+                        state
+                            .table
+                            .assign_rrows(id, UnifRecordRows::concrete(RecordRowsF::Empty))
+                    }
+                    GenericUnifRecordRowsIteratorItem::TailConstant(id) => {
+                        Err(UnifError::WithConst {
+                            var_kind: VarKindDiscriminant::RecordRows,
+                            expected_const_id: id,
+                            inferred: checked.clone(),
+                        })?
+                    }
+                    _ => (),
+                }
+            }
+            Ok(())
+        }
+        (_, _) => checked.unify(inferred_inst, state, &ctxt),
+    }
 }
 
 fn check_field<V: TypecheckVisitor>(
@@ -2846,7 +3039,18 @@ fn instantiate_foralls(
     // We are instantiating a polymorphic type: it's precisely the place where we have to increment
     // the variable level, to prevent already existing unification variables to unify with the
     // rigid type variables introduced here.
-    ctxt.var_level.incr();
+    //
+    // As this function can be called on monomorphic types, we only increment the level when we
+    // really introduce a new block of rigid type variables.
+    if matches!(
+        ty,
+        UnifType::Concrete {
+            typ: TypeF::Forall { .. },
+            ..
+        }
+    ) {
+        ctxt.var_level.incr();
+    }
 
     while let UnifType::Concrete {
         typ: TypeF::Forall {
@@ -2857,7 +3061,8 @@ fn instantiate_foralls(
         ..
     } = ty
     {
-        let kind = (&var_kind).into();
+        let kind: VarKindDiscriminant = (&var_kind).into();
+
         match var_kind {
             VarKind::Type => {
                 let fresh_uid = state.table.fresh_type_var_id(ctxt.var_level);

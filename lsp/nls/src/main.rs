@@ -2,6 +2,7 @@ use std::{fs, io, path::PathBuf};
 
 use anyhow::Result;
 
+use git_version::git_version;
 use log::debug;
 use lsp_server::Connection;
 
@@ -31,17 +32,30 @@ mod world;
 use crate::trace::Trace;
 
 #[derive(clap::Parser, Debug)]
-/// The LSP server of the Nickel language.
-struct Opt {
+/// The language server of the Nickel language.
+#[command(
+    author,
+    about,
+    long_about = None,
+    version = format!(
+        "{} {} (rev {})",
+        env!("CARGO_BIN_NAME"),
+        env!("CARGO_PKG_VERSION"),
+        // 7 is the length of self.shortRev. the string is padded out so it can
+        // be searched for in the binary
+        // The crate published on cargo doesn't have the git version, so we use "cargorel" as a
+        // fallback value
+        git_version!(fallback = &option_env!("NICKEL_NIX_BUILD_REV").unwrap_or("cargorel")[0..7])
+    )
+)]
+struct Options {
     /// The trace output file, disables tracing if not given
     #[arg(short, long)]
     trace: Option<PathBuf>,
 
-    /// The main server's id, in the platform-specific format used by the `ipc-channel` crate.
-    ///
-    /// If provided, this process will connect to the provided main server and run as a background worker.
+    /// If set, this process runs a background evaluation job instead of setting up a language server.
     #[arg(long)]
-    main_server: Option<String>,
+    background_eval: bool,
 }
 
 fn main() -> Result<()> {
@@ -49,11 +63,10 @@ fn main() -> Result<()> {
 
     env_logger::init();
 
-    let options = Opt::parse();
+    let options = Options::parse();
 
-    if let Some(main_server) = options.main_server {
-        background::worker_main(main_server);
-        return Ok(());
+    if options.background_eval {
+        return background::worker_main();
     }
 
     if let Some(file) = options.trace {

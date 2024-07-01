@@ -69,7 +69,7 @@ pub enum NormalToken<'input> {
     // This regex should be kept in sync with the one for RawEnumTag below.
     // Also, any change in the lexer regex must also be backported in the LSP's
     // regex for checking identifiers at ../lsp/nls/src/requests/completion.rs
-    #[regex("_?[a-zA-Z][_a-zA-Z0-9-']*")]
+    #[regex("_*[a-zA-Z][_a-zA-Z0-9-']*")]
     Identifier(&'input str),
     #[regex("[0-9]*\\.?[0-9]+([eE][+\\-]?[0-9]+)?", |lex| parse_number_sci(lex.slice()))]
     DecNumLiteral(Number),
@@ -82,7 +82,7 @@ pub enum NormalToken<'input> {
 
     // **IMPORTANT**
     // This regex should be kept in sync with the one for Identifier above.
-    #[regex("'_?[a-zA-Z][_a-zA-Z0-9-']*", |lex| lex.slice().split_at(1).1)]
+    #[regex("'_*[a-zA-Z][_a-zA-Z0-9-']*", |lex| lex.slice().split_at(1).1)]
     RawEnumTag(&'input str),
     #[token("'\"")]
     StrEnumTagBegin,
@@ -121,6 +121,10 @@ pub enum NormalToken<'input> {
     True,
     #[token("false")]
     False,
+    /// Or isn't a reserved keyword. It is a contextual keyword (a keyword that can be used as an
+    /// identifier because it's not ambiguous) within patterns.
+    #[token("or")]
+    Or,
 
     #[token("?")]
     QuestionMark,
@@ -190,54 +194,60 @@ pub enum NormalToken<'input> {
     #[token("%typeof%")]
     Typeof,
 
-    #[token("%apply_contract%")]
-    ApplyContract,
-    #[token("%array_lazy_app_ctr%")]
-    ArrayLazyAppCtr,
-    #[token("%record_lazy_app_ctr%")]
-    RecordLazyAppCtr,
+    #[token("%contract/apply%")]
+    ContractApply,
+    #[token("%contract/array_lazy_apply%")]
+    ContractArrayLazyApp,
+    #[token("%contract/record_lazy_apply%")]
+    ContractRecordLazyApp,
+    #[token("%contract/from_predicate%")]
+    ContractFromPredicate,
+    #[token("%contract/from_validator%")]
+    ContractFromValidator,
+    #[token("%contract/custom%")]
+    ContractCustom,
     #[token("%blame%")]
     Blame,
-    #[token("%chng_pol%")]
-    ChangePol,
-    #[token("%polarity%")]
-    Polarity,
-    #[token("%go_dom%")]
-    GoDom,
-    #[token("%go_codom%")]
-    GoCodom,
-    #[token("%go_field%")]
-    GoField,
-    #[token("%go_array%")]
-    GoArray,
-    #[token("%go_dict%")]
-    GoDict,
-    #[token("%insert_type_variable%")]
-    InsertTypeVar,
-    #[token("%lookup_type_variable%")]
-    LookupTypeVar,
+    #[token("%label/flip_polarity%")]
+    LabelFlipPol,
+    #[token("%label/polarity%")]
+    LabelPol,
+    #[token("%label/go_dom%")]
+    LabelGoDom,
+    #[token("%label/go_codom%")]
+    LabelGoCodom,
+    #[token("%label/go_field%")]
+    LabelGoField,
+    #[token("%label/go_array%")]
+    LabelGoArray,
+    #[token("%label/go_dict%")]
+    LabelGoDict,
+    #[token("%label/insert_type_variable%")]
+    LabelInsertTypeVar,
+    #[token("%label/lookup_type_variable%")]
+    LabelLookupTypeVar,
 
     #[token("%seal%")]
     Seal,
     #[token("%unseal%")]
     Unseal,
-    #[token("%embed%")]
-    Embed,
-    #[token("%record_map%")]
+    #[token("%enum/embed%")]
+    EnumEmbed,
+    #[token("%record/map%")]
     RecordMap,
-    #[token("%record_insert%")]
+    #[token("%record/insert%")]
     RecordInsert,
-    #[token("%record_insert_all%")]
-    RecordInsertAll,
-    #[token("%record_remove%")]
+    #[token("%record/insert_with_opts%")]
+    RecordInsertWithOpts,
+    #[token("%record/remove%")]
     RecordRemove,
-    #[token("%record_remove_all%")]
-    RecordRemoveAll,
-    #[token("%record_empty_with_tail%")]
+    #[token("%record/remove_with_opts%")]
+    RecordRemoveWithOpts,
+    #[token("%record/empty_with_tail%")]
     RecordEmptyWithTail,
-    #[token("%record_seal_tail%")]
+    #[token("%record/seal_tail%")]
     RecordSealTail,
-    #[token("%record_unseal_tail%")]
+    #[token("%record/unseal_tail%")]
     RecordUnsealTail,
     #[token("%seq%")]
     Seq,
@@ -245,35 +255,38 @@ pub enum NormalToken<'input> {
     DeepSeq,
     #[token("%force%")]
     OpForce,
-    #[token("%length%")]
-    Length,
-    #[token("%fields%")]
-    FieldsOf,
-    #[token("%values%")]
-    ValuesOf,
+    #[token("%array/length%")]
+    ArrayLength,
+    #[token("%record/fields%")]
+    RecordFields,
+    #[token("%record/fields_with_opts%")]
+    RecordFieldsWithOpts,
+
+    #[token("%record/values%")]
+    RecordValues,
     #[token("%pow%")]
     Pow,
     #[token("%trace%")]
     Trace,
 
-    #[token("%has_field%")]
-    HasField,
-    #[token("%has_field_all%")]
-    HasFieldAll,
-    #[token("%map%")]
-    Map,
-    #[token("%elem_at%")]
-    ElemAt,
-    #[token("%generate%")]
+    #[token("%record/has_field%")]
+    RecordHasField,
+    #[token("%record/has_field_with_opts%")]
+    RecordHasFieldWithOpts,
+    #[token("%array/map%")]
+    ArrayMap,
+    #[token("%array/at%")]
+    ArrayAt,
+    #[token("%array/generate%")]
     ArrayGen,
     #[token("%rec_force%")]
-    RecForceOp,
+    OpRecForce,
     #[token("%rec_default%")]
-    RecDefaultOp,
-    #[token("%field_is_defined%")]
-    FieldIsDefined,
-    #[token("%field_is_defined_all%")]
-    FieldIsDefinedAll,
+    OpRecDefault,
+    #[token("%record/field_is_defined%")]
+    RecordFieldIsDefined,
+    #[token("%record/field_is_defined_with_opts%")]
+    RecordFieldIsDefinedWithOpts,
 
     #[token("merge")]
     Merge,
@@ -296,52 +309,56 @@ pub enum NormalToken<'input> {
     Serialize,
     #[token("%deserialize%")]
     Deserialize,
-    #[token("%str_split%")]
-    StrSplit,
-    #[token("%str_trim%")]
-    StrTrim,
-    #[token("%str_chars%")]
-    StrChars,
-    #[token("%str_uppercase%")]
-    StrUppercase,
-    #[token("%str_lowercase%")]
-    StrLowercase,
-    #[token("%str_contains%")]
-    StrContains,
-    #[token("%str_replace%")]
-    StrReplace,
-    #[token("%str_replace_regex%")]
-    StrReplaceRegex,
-    #[token("%str_is_match%")]
-    StrIsMatch,
-    #[token("%str_find%")]
-    StrFind,
-    #[token("%str_length%")]
-    StrLength,
-    #[token("%str_substr%")]
-    StrSubstr,
-    #[token("%to_str%")]
-    ToStr,
-    #[token("%num_from_str%")]
-    NumFromStr,
-    #[token("%enum_from_str%")]
-    EnumFromStr,
-    #[token("%enum_unwrap_variant%")]
-    EnumUnwrapVariant,
-    #[token("%enum_is_variant%")]
+    #[token("%string/split%")]
+    StringSplit,
+    #[token("%string/trim%")]
+    StringTrim,
+    #[token("%string/chars%")]
+    StringChars,
+    #[token("%string/uppercase%")]
+    StringUppercase,
+    #[token("%string/lowercase%")]
+    StringLowercase,
+    #[token("%string/contains%")]
+    StringContains,
+    #[token("%string/replace%")]
+    StringReplace,
+    #[token("%string/replace_regex%")]
+    StringReplaceRegex,
+    #[token("%string/is_match%")]
+    StringIsMatch,
+    #[token("%string/find%")]
+    StringFind,
+    #[token("%string/find_all%")]
+    StringFindAll,
+    #[token("%string/length%")]
+    StringLength,
+    #[token("%string/substr%")]
+    StringSubstr,
+    #[token("%to_string%")]
+    ToString,
+    #[token("%number/from_string%")]
+    NumberFromString,
+    #[token("%enum/from_string%")]
+    EnumFromString,
+    #[token("%enum/get_arg%")]
+    EnumGetArg,
+    #[token("%enum/make_variant%")]
+    EnumMakeVariant,
+    #[token("%enum/is_variant%")]
     EnumIsVariant,
-    #[token("%enum_get_tag%")]
+    #[token("%enum/get_tag%")]
     EnumGetTag,
 
-    #[token("%label_with_message%")]
+    #[token("%label/with_message%")]
     LabelWithMessage,
-    #[token("%label_with_notes%")]
+    #[token("%label/with_notes%")]
     LabelWithNotes,
-    #[token("%label_append_note%")]
+    #[token("%label/append_note%")]
     LabelAppendNote,
-    #[token("%label_push_diag%")]
+    #[token("%label/push_diag%")]
     LabelPushDiag,
-    #[token("%array_slice%")]
+    #[token("%array/slice%")]
     ArraySlice,
     #[token("%eval_nix%")]
     EvalNix,

@@ -74,13 +74,12 @@
 //! appear inside recursive records. A dedicated garbage collector is probably something to
 //! consider at some point.
 
-use crate::identifier::Ident;
-use crate::term::string::NickelString;
 use crate::{
     cache::{Cache as ImportCache, Envs, ImportResolver},
     closurize::{closurize_rec_record, Closurize},
     environment::Environment as GenericEnvironment,
     error::{Error, EvalError},
+    identifier::Ident,
     identifier::LocIdent,
     match_sharedterm,
     position::TermPos,
@@ -90,8 +89,9 @@ use crate::{
         make as mk_term,
         pattern::compile::Compile,
         record::{Field, RecordData},
-        BinaryOp, BindingType, LetAttrs, MatchData, RecordOpKind, RichTerm, RuntimeContract,
-        StrChunk, Term, UnaryOp,
+        string::NickelString,
+        BinaryOp, BindingType, LetAttrs, MatchBranch, MatchData, RecordOpKind, RichTerm,
+        RuntimeContract, StrChunk, Term, UnaryOp,
     },
 };
 
@@ -530,10 +530,10 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                     //   corresponding polymorphic contract has been violated: a function tried to
                     //   use a polymorphic sealed value.
                     match stack_item {
-                        Some(OperationCont::Op2Second(BinaryOp::Unseal(), _, _, _)) => {
+                        Some(OperationCont::Op2Second(BinaryOp::Unseal, _, _, _)) => {
                             self.continuate_operation(closure)?
                         }
-                        Some(OperationCont::Op1(UnaryOp::Seq(), _)) => {
+                        Some(OperationCont::Op1(UnaryOp::Seq, _)) => {
                             // Then, evaluate / `Seq` the inner value.
                             Closure { body: inner, env }
                         }
@@ -662,7 +662,7 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                             });
 
                             Closure {
-                                body: RichTerm::new(Term::Op1(UnaryOp::ChunksConcat(), arg), pos),
+                                body: RichTerm::new(Term::Op1(UnaryOp::ChunksConcat, arg), pos),
                                 env,
                             }
                         }
@@ -721,9 +721,9 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                     // extensions
                     //
                     // ```
-                    // %record_insert% exp1
+                    // %record/insert% exp1
                     //   (...
-                    //     (%record_insert% expn {stat1 = val1, ..., statn = valn} dyn_valn)
+                    //     (%record/insert% expn {stat1 = val1, ..., statn = valn} dyn_valn)
                     //   ...)
                     //   dyn_val1
                     //
@@ -751,7 +751,7 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                             } = field;
 
                             let extend = mk_term::op2(
-                                BinaryOp::DynExtend {
+                                BinaryOp::RecordInsert {
                                     metadata,
                                     pending_contracts,
                                     ext_kind,
@@ -859,11 +859,6 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                         env,
                     }
                 }
-                // Evaluating a type turns it into a contract.
-                Term::Type(ty) => Closure {
-                    body: ty.contract()?,
-                    env,
-                },
                 // Function call if there's no continuation on the stack (otherwise, the function
                 // is just an argument to a primop or to put in the eval cache)
                 Term::Fun(x, t) if !has_cont_on_stack => {
@@ -943,12 +938,19 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
     ///   fields and array elements, we keep evaluating subsequent elements even if one
     ///   fails.
     /// - We only return the accumulated errors; we don't return the eval'ed term.
-    pub fn eval_permissive(&mut self, rt: RichTerm) -> Vec<EvalError> {
+    /// - We support a recursion limit, to limit the number of times we recurse into
+    ///   arrays or records.
+    pub fn eval_permissive(&mut self, rt: RichTerm, recursion_limit: usize) -> Vec<EvalError> {
         fn inner<R: ImportResolver, C: Cache>(
             slf: &mut VirtualMachine<R, C>,
             acc: &mut Vec<EvalError>,
             rt: RichTerm,
+            recursion_limit: usize,
         ) {
+            if recursion_limit == 0 {
+                return;
+            }
+
             let pos = rt.pos;
             match slf.eval(rt) {
                 Err(e) => {
@@ -966,7 +968,7 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                                 attrs.pending_contracts.iter().cloned(),
                                 t.pos,
                             );
-                            inner(slf, acc, value_with_ctr);
+                            inner(slf, acc, value_with_ctr, recursion_limit.saturating_sub(1));
                         }
                     }
                     Term::Record(data) => {
@@ -977,7 +979,7 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                                     field.pending_contracts.iter().cloned(),
                                     v.pos,
                                 );
-                                inner(slf, acc, value_with_ctr);
+                                inner(slf, acc, value_with_ctr, recursion_limit.saturating_sub(1));
                             } else {
                                 acc.push(EvalError::MissingFieldDef {
                                     id: *id,
@@ -993,7 +995,7 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
             }
         }
         let mut ret = Vec::new();
-        inner(self, &mut ret, rt);
+        inner(self, &mut ret, rt, recursion_limit);
         ret
     }
 }
@@ -1149,7 +1151,9 @@ pub fn subst<C: Cache>(
         // Do not substitute under lambdas: mutually recursive function could cause an infinite
         // loop. Although avoidable, this requires some care and is not currently needed.
         | v @ Term::Fun(..)
+        | v @ Term::CustomContract(_)
         | v @ Term::Lbl(_)
+        | v @ Term::ForeignId(_)
         | v @ Term::SealingKey(_)
         | v @ Term::Enum(_)
         | v @ Term::Import(_)
@@ -1182,20 +1186,18 @@ pub fn subst<C: Cache>(
             RichTerm::new(Term::App(t1, t2), pos)
         }
         Term::Match(data) => {
-            let default =
-                data.default.map(|d| subst(cache, d, initial_env, env));
-
             let branches = data.branches
                 .into_iter()
-                .map(|(pat, branch)| {
-                    (
-                        pat,
-                        subst(cache, branch, initial_env, env),
-                    )
+                .map(|MatchBranch { pattern, guard, body} | {
+                    MatchBranch {
+                        pattern,
+                        guard: guard.map(|cond| subst(cache, cond, initial_env, env)),
+                        body: subst(cache, body, initial_env, env),
+                    }
                 })
                 .collect();
 
-            RichTerm::new(Term::Match(MatchData { branches, default}), pos)
+            RichTerm::new(Term::Match(MatchData { branches }), pos)
         }
         Term::Op1(op, t) => {
             let t = subst(cache, t, initial_env, env);

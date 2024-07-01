@@ -105,7 +105,7 @@ the `nickel-lang-core` crate documentation).
      packages. Pass arguments to Nickel with an extra `--` as in `nix run
      github:tweag/nickel -- repl`,
    - Again with flake-enabled Nix, you can install Nickel in your profile with
-     `nix profile add github:tweag/nickel`. The `nickel` command is then in your
+     `nix profile install github:tweag/nickel`. The `nickel` command is then in your
      `$PATH` and is available anywhere.
    - If you're running macOS you can use Homebrew to install the Nickel binary
      with `brew install nickel`.
@@ -167,12 +167,6 @@ Server. Please follow
 highlighting and NLS.
 
 #### Formatting
-
-**Warning**: because the cargo registry (crates.io) requires that all
-dependencies of Nickel are published there as well, the `format` feature isn't
-enabled when installing nickel with `cargo install` as of Nickel version 1.5.0.
-In this case, please use [Topiary](https://github.com/tweag/topiary/) separately
-to format Nickel source code.
 
 To format one or several Nickel source files, use `nickel format`:
 
