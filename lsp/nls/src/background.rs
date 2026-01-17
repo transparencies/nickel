@@ -29,6 +29,8 @@ struct Eval {
     contents: Vec<(Url, Arc<str>)>,
     /// The url of the file to evaluate.
     eval: Url,
+    /// Mark the evaluation as high priority.
+    high_priority: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -96,6 +98,9 @@ struct SupervisorState {
 
     // A stack of files we want to evaluate, which we do in LIFO order.
     eval_stack: Vec<Eval>,
+    // High priority files to evaluate. These will be evaluated before the files in
+    // `eval_stack`
+    priority_eval_stack: Vec<Eval>,
 
     // If evaluating a file causes the worker to time out or crash, we blacklist that file
     // and refuse to evaluate it for `self.config.blacklist_duration`
@@ -115,6 +120,7 @@ impl SupervisorState {
             response_tx,
             banned_files: HashMap::new(),
             eval_stack: Vec::new(),
+            priority_eval_stack: Vec::new(),
             config,
         })
     }
@@ -166,13 +172,18 @@ impl SupervisorState {
         match self.banned_files.get(&eval.eval) {
             Some(blacklist_time) if blacklist_time.elapsed() < self.config.blacklist_duration => {}
             _ => {
+                let stack = if eval.high_priority {
+                    &mut self.priority_eval_stack
+                } else {
+                    &mut self.eval_stack
+                };
                 // If we re-request an evaluation, remove the old one. (This is quadratic in the
                 // size of the eval stack, but it only contains unique entries so we don't expect it
                 // to get big.)
-                if let Some(idx) = self.eval_stack.iter().position(|u| u.eval == eval.eval) {
-                    self.eval_stack.remove(idx);
+                if let Some(idx) = stack.iter().position(|u| u.eval == eval.eval) {
+                    stack.remove(idx);
                 }
-                self.eval_stack.push(eval)
+                stack.push(eval)
             }
         }
     }
@@ -185,7 +196,7 @@ impl SupervisorState {
 
     fn run(&mut self) {
         loop {
-            if self.eval_stack.is_empty() {
+            if self.eval_stack.is_empty() && self.priority_eval_stack.is_empty() {
                 // Block until a eval request is available, to avoid busy-looping.
                 match self.eval_rx.recv() {
                     Ok(eval) => self.handle_eval(eval),
@@ -195,7 +206,14 @@ impl SupervisorState {
             }
             self.drain_queue();
 
-            if let Some(eval) = self.eval_stack.pop() {
+            // If there are any priority items, they should be done first.
+            let stack = if !self.priority_eval_stack.is_empty() {
+                &mut self.priority_eval_stack
+            } else {
+                &mut self.eval_stack
+            };
+
+            if let Some(eval) = stack.pop() {
                 // This blocks until the eval is done. We allow further eval requests to queue up
                 // in the channel while we're working.
                 match self.eval(&eval) {
@@ -264,13 +282,25 @@ impl BackgroundJobs {
         Some(contents)
     }
 
-    pub fn eval_file(&mut self, uri: Url, world: &World) {
+    fn eval_file_with_priority(&mut self, uri: Url, world: &World, high_priority: bool) {
         if let Some(contents) = self.contents(&uri, world) {
             let _ = self.sender.send(Eval {
                 eval: uri,
                 contents,
+                high_priority,
             });
         };
+    }
+
+    /// Queue a file for evaluation with normal priority.
+    pub fn eval_file(&mut self, uri: Url, world: &World) {
+        self.eval_file_with_priority(uri, world, false);
+    }
+
+    /// Queue a file for evaluation with high priority. This should be used for files
+    /// which are currently being edited.
+    pub fn priority_eval_file(&mut self, uri: Url, world: &World) {
+        self.eval_file_with_priority(uri, world, true);
     }
 
     pub fn receiver(&self) -> Option<&Receiver<Diagnostics>> {

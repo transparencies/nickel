@@ -209,7 +209,7 @@ impl Server {
                     serde_json::from_value::<DidOpenTextDocumentParams>(notification.params)?;
                 let uri = params.text_document.uri.clone();
                 let invalid = crate::files::handle_open(self, params)?;
-                self.background_jobs.eval_file(uri, &self.world);
+                self.background_jobs.priority_eval_file(uri, &self.world);
                 for uri in invalid {
                     self.background_jobs.eval_file(uri, &self.world);
                 }
@@ -236,7 +236,7 @@ impl Server {
                     serde_json::from_value::<DidChangeTextDocumentParams>(notification.params)?;
                 let uri = params.text_document.uri.clone();
                 let invalid = crate::files::handle_save(self, params)?;
-                self.background_jobs.eval_file(uri, &self.world);
+                self.background_jobs.priority_eval_file(uri, &self.world);
                 for uri in invalid {
                     self.background_jobs.eval_file(uri, &self.world);
                 }
