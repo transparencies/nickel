@@ -28,8 +28,8 @@ use crate::package::PackageCommand;
     author,
 
     about,
-
     long_about = None,
+
     version = format!(
         "{} {} (rev {})",
         env!("CARGO_BIN_NAME"),

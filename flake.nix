@@ -269,28 +269,31 @@
           cargoBuildExtraArgs = "--frozen --offline";
 
           # Build *just* the cargo dependencies, so we can reuse all of that work (e.g. via cachix) when running in CI
-          mkCargoArtifactsDeps = { cargoExtraArgs ? "", prevArtifacts ? false }: craneLib.buildDepsOnly ({
-            inherit pname src;
-            cargoExtraArgs = "${cargoBuildExtraArgs} ${cargoExtraArgs} --workspace";
+          cargoArtifactsDeps = craneLib.buildDepsOnly {
+              inherit pname src;
+              buildPhaseCargoCommand = ''
+                cargo check --workspace --locked
+                cargo check --workspace --locked --all-features
+                cargo check --workspace --locked --features=package-experimental
+                cargo build --workspace --locked
+                cargo build --workspace --locked --all-features
+                cargo build --workspace --locked --features=package-experimental
+              '';
 
-            # pyo3 needs a Python interpreter in the build environment
-            # https://pyo3.rs/v0.17.3/building_and_distribution#configuring-the-python-version
-            nativeBuildInputs = with pkgs; [ pkg-config python3 ];
-            buildInputs = [
-              pkgs.nix
-              pkgs.boost # implicit dependency of nix
-            ];
+              # pyo3 needs a Python interpreter in the build environment
+              # https://pyo3.rs/v0.17.3/building_and_distribution#configuring-the-python-version
+              nativeBuildInputs = with pkgs; [ pkg-config python3 ];
+              buildInputs = [
+                pkgs.nix
+                pkgs.boost # implicit dependency of nix
+              ];
 
-            # seems to be needed for consumer cargoArtifacts to be able to use
-            # zstd mode properly
-            installCargoArtifactsMode = "use-zstd";
-            CARGO_PROFILE = profile;
-          } // { cargoArtifacts = prevArtifacts; });
-
-          # Some of our builds use --all-features and others don't. We build the deps with both options
-          # and gather all the artifacts together.
-          cargoArtifactsAllFeaturesDeps = mkCargoArtifactsDeps { cargoExtraArgs = "--all-features"; };
-          cargoArtifactsDeps = mkCargoArtifactsDeps { prevArtifacts = cargoArtifactsAllFeaturesDeps; };
+              # seems to be needed for consumer cargoArtifacts to be able to use
+              # zstd mode properly
+              installCargoArtifactsMode = "use-zstd";
+              CARGO_PROFILE = profile;
+              env.PYO3_PYTHON = "${pkgs.python3}/bin/python";
+            };
 
           env = {
             NICKEL_NIX_BUILD_REV = dummyRev;
@@ -324,6 +327,7 @@
 
               cargoExtraArgs = "${cargoBuildExtraArgs} ${featuresArg} ${extraBuildArgs} --workspace";
               CARGO_PROFILE = profile;
+              env.PYO3_PYTHON = "${pkgs.python3}/bin/python";
             } // extraArgs);
 
           # To build Nickel and its dependencies statically we use the musl
@@ -502,6 +506,8 @@
             pname = "nickel-check-fmt";
             cargoArtifacts = null;
             cargoExtraArgs = "--package nickel-check-fmt";
+            # TODO: we could filter out more sources (but not the entire
+            # workspace, because nickel-check-fmt uses workspace dependencies).
             src = craneLib.cleanCargoSource ./.;
             doCheck = false;
             meta.mainProgram = "nickel-check-fmt";
@@ -744,6 +750,9 @@
           nickel-lang-c
           nickel-check-fmt
           benchmarks
+          cargoArtifactsDeps
+          cargoArtifactsDefaultDeps
+          cargoArtifactsPkgDeps
           cargoArtifacts;
         default = packages.nickel-lang;
 
