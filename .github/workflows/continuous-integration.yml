@@ -49,15 +49,31 @@ jobs:
         extra_nix_config: |
           experimental-features = nix-command flakes
           accept-flake-config = true
+          keep-outputs = true
+          keep-derivations = true
 
-    - name: Magic Nix cache
-      uses: DeterminateSystems/magic-nix-cache-action@18f387d6764e62a1ef95201d3ad9d594a2b0a455
+    - name: Nix cache
+      uses: nix-community/cache-nix-action@v7
       with:
-        use-flakehub: false
+        primary-key: ci-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+        restore-prefixes-first-match: ci-${{ runner.os }}-
+        # TODO: how to prevent the most recent thing from getting gc-ed?
+        #gc-max-store-size-linux: 10G
+        # TODO: we want to purge old caches, but this purges the
+        # cache we just created...
+        purge: true
+        purge-prefixes: non-existent-prefix-
+
 
     - name: Run all checks
       run: |
-        nix flake check --print-build-logs
+        SYSTEM=$(nix eval --impure --raw --expr builtins.currentSystem)
+        nix eval .#checks.${SYSTEM} --apply builtins.attrNames --json \
+          | jq -r '.[]' \
+          | xargs -I {} nix build .#checks.${SYSTEM}.{} --out-link .check-{} --print-build-logs
+        ls /nix/store/*nickel-lang*
+        nix store gc
+        ls /nix/store/*nickel-lang*
 
     - name: Check disk space
       run: df -h

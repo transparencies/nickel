@@ -26,10 +26,8 @@ use crate::package::PackageCommand;
 /// The interpreter of the Nickel language.
 #[command(
     author,
-
     about,
     long_about = None,
-
     version = format!(
         "{} {} (rev {})",
         env!("CARGO_BIN_NAME"),
