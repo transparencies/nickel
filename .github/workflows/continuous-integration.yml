@@ -57,27 +57,28 @@ jobs:
       with:
         primary-key: ci-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
         restore-prefixes-first-match: ci-${{ runner.os }}-
-        # TODO: how to prevent the most recent thing from getting gc-ed?
-        #gc-max-store-size-linux: 10G
-        # TODO: we want to purge old caches, but this purges the
-        # cache we just created...
         purge: true
+        # This was the only way I could figure out to stop cache-nix-action from
+        # purging the cache that it just created. The "purge: true" above makes
+        # it purge the old cache just before trying to save a new one. This line
+        # makes it not purge anything after saving.
         purge-prefixes: non-existent-prefix-
 
 
     - name: Run all checks
       run: |
+        # This is basically `nix flake check`, except that it creates extra GC
+        # roots. Then we run a GC to get rid of anything that's unlikely to be
+        # useful to cache.
         SYSTEM=$(nix eval --impure --raw --expr builtins.currentSystem)
         nix eval .#checks.${SYSTEM} --apply builtins.attrNames --json \
           | jq -r '.[]' \
           | xargs -I {} nix build .#checks.${SYSTEM}.{} --out-link .check-{} --print-build-logs
-        ls /nix/store/*nickel-lang*
         nix store gc
-        ls /nix/store/*nickel-lang*
 
-    - name: Check disk space
-      run: df -h
-
+    # FIXME: this is broken right now: we don't have nickel installed. And I think
+    # maybe we'd prefer to use the nickel we just built? Anyway, it was already broken
+    # so we'll fix it later.
     - name: Typecheck benchmarks
       run: find core/benches -type f -name "*.ncl" -exec nickel typecheck '{}' \;
 
