@@ -506,9 +506,15 @@
             pname = "nickel-check-fmt";
             cargoArtifacts = null;
             cargoExtraArgs = "--package nickel-check-fmt";
-            # TODO: we could filter out more sources (but not the entire
-            # workspace, because nickel-check-fmt uses workspace dependencies).
-            src = craneLib.cleanCargoSource ./.;
+            # We can't just declare ./fmt to be the source: we depend on the workspace for
+            # dependencies. So we just stub out the whole workspace and then copy ./fmt
+            # back in.
+            src = craneLib.mkDummySrc {
+              src = ./.;
+              extraDummyScript = ''
+                cp -r ${./fmt} $out/
+              '';
+            };
             doCheck = false;
             meta.mainProgram = "nickel-check-fmt";
             CARGO_PROFILE = "dev";
