@@ -3,7 +3,7 @@
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     pre-commit-hooks = {
-      url = "github:cachix/pre-commit-hooks.nix";
+      url = "github:cachix/git-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     rust-overlay = {
@@ -96,8 +96,7 @@
         let
           inherit (pkgs.stdenv) hostPlatform;
         in
-        { rustProfile ? "minimal"
-        , rustExtensions ? [
+        { rustExtensions ? [
             "rustfmt"
             "clippy"
           ]
@@ -146,7 +145,7 @@
           nickel-format = {
             name = "nickel-format";
             description = "The nickel formatter";
-            entry = "${pkgs.lib.getExe self.packages."${system}".default} format";
+            entry = "${pkgs.lib.getExe self.packages."${system}".nickel-check-fmt}";
             types = [ "text" ];
             enable = true;
             # Some tests are currently failing the idempotency check, and
@@ -270,9 +269,16 @@
           cargoBuildExtraArgs = "--frozen --offline";
 
           # Build *just* the cargo dependencies, so we can reuse all of that work (e.g. via cachix) when running in CI
-          mkCargoArtifactsDeps = { cargoExtraArgs ? "", prevArtifacts ? false }: craneLib.buildDepsOnly ({
+          cargoArtifactsDeps = craneLib.buildDepsOnly {
             inherit pname src;
-            cargoExtraArgs = "${cargoBuildExtraArgs} ${cargoExtraArgs} --workspace";
+            buildPhaseCargoCommand = ''
+              cargo check --workspace --locked
+              cargo check --workspace --locked --all-features
+              cargo check --workspace --locked --features=package-experimental
+              cargo build --workspace --locked
+              cargo build --workspace --locked --all-features
+              cargo build --workspace --locked --features=package-experimental
+            '';
 
             # pyo3 needs a Python interpreter in the build environment
             # https://pyo3.rs/v0.17.3/building_and_distribution#configuring-the-python-version
@@ -286,12 +292,8 @@
             # zstd mode properly
             installCargoArtifactsMode = "use-zstd";
             CARGO_PROFILE = profile;
-          } // { cargoArtifacts = prevArtifacts; });
-
-          # Some of our builds use --all-features and others don't. We build the deps with both options
-          # and gather all the artifacts together.
-          cargoArtifactsAllFeaturesDeps = mkCargoArtifactsDeps { cargoExtraArgs = "--all-features"; };
-          cargoArtifactsDeps = mkCargoArtifactsDeps { prevArtifacts = cargoArtifactsAllFeaturesDeps; };
+            env.PYO3_PYTHON = "${pkgs.python3}/bin/python";
+          };
 
           env = {
             NICKEL_NIX_BUILD_REV = dummyRev;
@@ -321,10 +323,11 @@
                 [ git ]
                   ++ pkgs.lib.optionals
                   (builtins.elem "nix-experimental" extraNickelFeatures)
-                  ([ boost nix ]);
+                  [ boost nix ];
 
               cargoExtraArgs = "${cargoBuildExtraArgs} ${featuresArg} ${extraBuildArgs} --workspace";
               CARGO_PROFILE = profile;
+              env.PYO3_PYTHON = "${pkgs.python3}/bin/python";
             } // extraArgs);
 
           # To build Nickel and its dependencies statically we use the musl
@@ -497,6 +500,18 @@
             checkPhase = ''
               $out/bin/run_tests
             '';
+          };
+
+          nickel-check-fmt = craneLib.buildPackage {
+            pname = "nickel-check-fmt";
+            cargoArtifacts = null;
+            cargoExtraArgs = "--package nickel-check-fmt";
+            # TODO: we could filter out more sources (but not the entire
+            # workspace, because nickel-check-fmt uses workspace dependencies).
+            src = craneLib.cleanCargoSource ./.;
+            doCheck = false;
+            meta.mainProgram = "nickel-check-fmt";
+            CARGO_PROFILE = "dev";
           };
 
           benchmarks = craneLib.mkCargoDerivation {
@@ -712,7 +727,7 @@
 
       stdlibTests = pkgs.runCommandLocal "stdlib-test" { }
         ''
-          ${pkgs.lib.getExe self.packages."${system}".default} test ${./core/stdlib/std.ncl} && mkdir $out
+          ${pkgs.lib.getExe self.checks."${system}".nickel-lang} test ${./core/stdlib/std.ncl} && mkdir $out
         '';
 
       # This flake used to build nickel-lang-cli and nickel-lang-lsp packages with separate
@@ -733,7 +748,9 @@
           nickel-lang-pkg
           nickel-lang-nix
           nickel-lang-c
+          nickel-check-fmt
           benchmarks
+          cargoArtifactsDeps
           cargoArtifacts;
         default = packages.nickel-lang;
 
@@ -760,7 +777,6 @@
 
       devShells.default = makeDevShell {
         rust = mkRust {
-          rustProfile = "default";
           targets = [ "wasm32-unknown-unknown" ];
           rustExtensions = [
             "rustfmt"

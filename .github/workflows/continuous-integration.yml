@@ -20,12 +20,9 @@ jobs:
             name: linux
           - os: macos-15
             name: macos
-            continue-on-error: true
 
     name: build-and-test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    # The `== true` makes it work whether continue-on-error has been defined or not.
-    continue-on-error: ${{ matrix.continue-on-error == true }}
 
     steps:
 
@@ -34,15 +31,16 @@ jobs:
       with:
         fetch-depth: 0
 
-    - name: Free disk space
-      # This hash is a recent main version, because v6 (the latest release as of
-      # this comment) doesn't work with the cachix install action.
-      uses: wimpysworld/nothing-but-nix@10c936d9e46521bf923f75458e0cbd4fa309300d
-      with:
-        hatchet-protocol: 'holster'
-      # Currently broken on macos:
-      # https://github.com/wimpysworld/nothing-but-nix/issues/39
+    # Last I checked, the ubuntu runners have a root filesystem with 23G free
+    # and a /mnt with 66G free. Putting /nix in /mnt seems to stop us from
+    # running out of disk space. (There are also actions available that do
+    # more drastic things.)
+    - name: Loop mount
       if: runner.os == 'Linux'
+      run: |
+        sudo mkdir /mnt/nix
+        sudo mkdir /nix
+        sudo mount --bind /mnt/nix /nix
 
     - name: Install Nix
       uses: cachix/install-nix-action@v31
@@ -51,17 +49,36 @@ jobs:
         extra_nix_config: |
           experimental-features = nix-command flakes
           accept-flake-config = true
+          keep-outputs = true
+          keep-derivations = true
 
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v16
+    - name: Nix cache
+      uses: nix-community/cache-nix-action@v7
       with:
-        name: tweag-nickel
-        authToken: '${{ secrets.CACHIX_TWEAG_NICKEL_AUTH_TOKEN }}'
+        primary-key: ci-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+        restore-prefixes-first-match: ci-${{ runner.os }}-
+        purge: true
+        # This was the only way I could figure out to stop cache-nix-action from
+        # purging the cache that it just created. The "purge: true" above makes
+        # it purge the old cache just before trying to save a new one. This line
+        # makes it not purge anything after saving.
+        purge-prefixes: non-existent-prefix-
+
 
     - name: Run all checks
       run: |
-        nix flake check --print-build-logs
+        # This is basically `nix flake check`, except that it creates extra GC
+        # roots. Then we run a GC to get rid of anything that's unlikely to be
+        # useful to cache.
+        SYSTEM=$(nix eval --impure --raw --expr builtins.currentSystem)
+        nix eval .#checks.${SYSTEM} --apply builtins.attrNames --json \
+          | jq -r '.[]' \
+          | xargs -I {} nix build .#checks.${SYSTEM}.{} --out-link .check-{} --print-build-logs
+        nix store gc
 
+    # FIXME: this is broken right now: we don't have nickel installed. And I think
+    # maybe we'd prefer to use the nickel we just built? Anyway, it was already broken
+    # so we'll fix it later.
     - name: Typecheck benchmarks
       run: find core/benches -type f -name "*.ncl" -exec nickel typecheck '{}' \;
 
