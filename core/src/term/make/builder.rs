@@ -230,10 +230,12 @@ where
     let fst = it.next().unwrap();
 
     let content = it.rev().fold(content, |acc, id| {
-        record::Field::from(NickelValue::record_posless(RecordData {
-            fields: [(LocIdent::from(id), acc)].into(),
-            ..Default::default()
-        }))
+        record::Field::from(NickelValue::term_posless(Term::Closurize(
+            NickelValue::record_posless(RecordData {
+                fields: [(LocIdent::from(id), acc)].into(),
+                ..Default::default()
+            }),
+        )))
     });
 
     (fst.into(), content)
@@ -349,9 +351,8 @@ impl Record {
     /// # Closurization
     ///
     /// [Self::build] is intended to provide a ready-to-use value, so the built record is wrapped
-    /// into a [crate::term::Term::Closurize] operation. Otherwise, since records are assumed to be
-    /// closurized during evaluation, using a bare record at runtime would either panic or
-    /// introduce subtle bugs.
+    /// into a [crate::term::Term::Closurize] operation, as are any sub-records implicitly created
+    /// by field paths. However, field values are not automatically closurized.
     pub fn build(self) -> NickelValue {
         let elaborated = self
             .fields
