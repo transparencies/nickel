@@ -2,4 +2,4 @@
 source: cli/tests/snapshot/main.rs
 expression: out
 ---
-{ foo = [ 1, 2 ], bar = {} }
+{ foo = [1, 2], bar = {} }
