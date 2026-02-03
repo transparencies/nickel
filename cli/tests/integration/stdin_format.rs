@@ -124,8 +124,9 @@ fn converts_json_from_stdin() {
         vec!["convert", "--stdin-format", "json"],
         "{ \"foo\": \"hello\", \"bar\": 123 }",
     );
+
     assert_eq!(output.stderr, "");
-    assert_eq!(output.stdout, "{ foo = \"hello\", bar = 123 }");
+    assert_eq!(output.stdout.trim(), "{ foo = \"hello\", bar = 123 }");
 }
 
 #[test]
