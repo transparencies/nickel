@@ -26,6 +26,7 @@ mod incomplete;
 mod position;
 mod requests;
 mod server;
+mod task_queue;
 use server::Server;
 mod term;
 mod trace;

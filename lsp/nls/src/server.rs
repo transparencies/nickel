@@ -8,7 +8,6 @@ use lsp_server::{
 };
 use lsp_types::{
     CodeActionParams, CompletionOptions, CompletionParams, DiagnosticOptions,
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DocumentDiagnosticParams, DocumentDiagnosticReport, DocumentDiagnosticReportResult,
     DocumentFormattingParams, DocumentSymbolParams, ExecuteCommandParams,
     FullDocumentDiagnosticReport, GotoDefinitionParams, HoverOptions, HoverParams,
@@ -16,19 +15,17 @@ use lsp_types::{
     RelatedFullDocumentDiagnosticReport, RenameParams, ServerCapabilities,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Url,
     WorkDoneProgressOptions,
-    notification::{
-        DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _,
-    },
     request::{Request as RequestTrait, *},
 };
 use nickel_lang_core::files::FileId;
 
 use crate::{
     actions,
-    background::BackgroundJobs,
+    background::{self, BackgroundJobs},
     command,
     config::LspConfig,
     requests::{completion, formatting, goto, hover, rename, symbols},
+    task_queue::{DocumentSync, Task, TaskQueue},
     trace::Trace,
     world::World,
 };
@@ -51,6 +48,7 @@ pub struct Server {
     pub last_diagnostics: HashMap<Url, Vec<lsp_types::Diagnostic>>,
     pub world: World,
     pub background_jobs: BackgroundJobs,
+    pub task_queue: TaskQueue,
 }
 
 impl Server {
@@ -100,6 +98,7 @@ impl Server {
             last_diagnostics: HashMap::new(),
             background_jobs: BackgroundJobs::new(config.eval_config.clone()),
             world: World::new(config),
+            task_queue: TaskQueue::new(),
         }
     }
 
@@ -144,38 +143,60 @@ impl Server {
             let never = crossbeam::channel::never();
             let bg = self.background_jobs.receiver().unwrap_or(&never);
 
-            select! {
-                recv(self.connection.receiver) -> msg => {
-                    // Failure here means the connection was closed, so exit quietly.
-                    let Ok(msg) = msg else {
-                        break;
-                    };
-                    if self.handle_message(msg)? == Shutdown::Shutdown {
-                        break;
+            if let Ok(msg) = self.connection.receiver.try_recv() {
+                let result = self.task_queue.queue_message(msg);
+                if let Err(err) = result {
+                    warn!("Failed to add a message to the queue: {}", err);
+                }
+            } else if let Ok(diagnostics) = bg.try_recv() {
+                self.publish_background_diagnostics(diagnostics);
+            } else if let Some(task) = self.task_queue.next_task() {
+                if self.handle_task(task)? == Shutdown::Shutdown {
+                    break;
+                }
+            } else {
+                select! {
+                    recv(self.connection.receiver) -> msg => {
+                        // Failure here means the connection was closed, so exit quietly.
+                        let Ok(msg) = msg else {
+                            break;
+                        };
+                        let result = self.task_queue.queue_message(msg);
+                        if let Err(err) = result {
+                            warn!("Failed to add a message to the queue: {}", err);
+                        };
+                    }
+                    recv(bg) -> msg => {
+                        // Failure here means our background thread panicked, and that's a bug.
+                        self.publish_background_diagnostics(msg.unwrap());
                     }
                 }
-                recv(bg) -> msg => {
-                    // Failure here means our background thread panicked, and that's a bug.
-                    let crate::background::Diagnostics { path, diagnostics } = msg.unwrap();
-                    let uri = Url::from_file_path(path).unwrap();
-                    let diagnostics = diagnostics.into_iter().map(From::from).collect();
-                    self.publish_diagnostics(uri, diagnostics);
-                }
             }
         }
-        while let Ok(msg) = self.connection.receiver.recv() {
-            if self.handle_message(msg)? == Shutdown::Shutdown {
-                break;
-            }
-        }
+
+        // TODO: I'm not clear what was is doing since my impression was that to get here either
+        // the server was already shutting down or the connection was closed. If it was doing
+        // something I'll have to figure out how to handle it.
+        //
+        // while let Ok(msg) = self.connection.receiver.recv() {
+        //    if self.handle_message(msg)? == Shutdown::Shutdown {
+        //        break;
+        //    }
+        //}
 
         Ok(())
     }
 
-    fn handle_message(&mut self, msg: Message) -> Result<Shutdown> {
-        trace!("Message: {msg:#?}");
-        match msg {
-            Message::Request(req) => {
+    fn publish_background_diagnostics(&mut self, diagnostics: crate::background::Diagnostics) {
+        let background::Diagnostics { path, diagnostics } = diagnostics;
+        let uri = Url::from_file_path(path).unwrap();
+        let diagnostics = diagnostics.into_iter().map(From::from).collect();
+        self.publish_diagnostics(uri, diagnostics);
+    }
+
+    fn handle_task(&mut self, task: Task) -> Result<Shutdown> {
+        match task {
+            Task::HandleRequest(req) => {
                 let id = req.id.clone();
                 match self.connection.handle_shutdown(&req) {
                     Ok(true) => Ok(Shutdown::Shutdown),
@@ -193,20 +214,19 @@ impl Server {
                     }
                 }
             }
-            Message::Notification(notification) => {
-                let _ = self.handle_notification(notification);
+            Task::HandleDocumentSync(req) => {
+                self.handle_document_sync(req);
                 Ok(Shutdown::Continue)
             }
-            Message::Response(_) => Ok(Shutdown::Continue),
+
+            Task::Diagnostics(_) => todo!(),
         }
     }
 
-    fn handle_notification(&mut self, notification: Notification) -> Result<()> {
-        match notification.method.as_str() {
-            DidOpenTextDocument::METHOD => {
+    fn handle_document_sync(&mut self, task: DocumentSync) -> Result<()> {
+        match task {
+            DocumentSync::DidOpenTextDocument(params) => {
                 trace!("handle open notification");
-                let params =
-                    serde_json::from_value::<DidOpenTextDocumentParams>(notification.params)?;
                 let uri = params.text_document.uri.clone();
                 let invalid = crate::files::handle_open(self, params)?;
                 self.background_jobs.priority_eval_file(uri, &self.world);
@@ -215,10 +235,8 @@ impl Server {
                 }
                 Ok(())
             }
-            DidCloseTextDocument::METHOD => {
+            DocumentSync::DidCloseTextDocument(params) => {
                 trace!("handle close notification");
-                let params =
-                    serde_json::from_value::<DidCloseTextDocumentParams>(notification.params)?;
                 let uri = params.text_document.uri.clone();
                 let (new_file, invalid) = crate::files::handle_close(self, params)?;
                 if new_file.is_some() {
@@ -229,11 +247,8 @@ impl Server {
                 }
                 Ok(())
             }
-
-            DidChangeTextDocument::METHOD => {
+            DocumentSync::DidChangeTextDocument(params) => {
                 trace!("handle save notification");
-                let params =
-                    serde_json::from_value::<DidChangeTextDocumentParams>(notification.params)?;
                 let uri = params.text_document.uri.clone();
                 let invalid = crate::files::handle_save(self, params)?;
                 self.background_jobs.priority_eval_file(uri, &self.world);
@@ -242,7 +257,6 @@ impl Server {
                 }
                 Ok(())
             }
-            _ => Ok(()),
         }
     }
 
