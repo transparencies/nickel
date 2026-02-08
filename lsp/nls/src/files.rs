@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use log::info;
 use lsp_server::RequestId;
 use lsp_types::{
@@ -11,6 +11,7 @@ use nickel_lang_core::files::FileId;
 
 use crate::{
     error::Error,
+    task_queue::{DiagnosticsRequest, Priority},
     trace::{Enrich, Trace, param::FileUpdate},
 };
 
@@ -43,13 +44,6 @@ pub fn handle_open(server: &mut Server, params: DidOpenTextDocumentParams) -> Re
         .add_file(uri.clone(), params.text_document.text)?;
     info!("Opened file {uri} with ID {file_id:?}");
 
-    let diags = server.world.parse_and_typecheck(file_id);
-    server.issue_diagnostics(file_id, diags);
-
-    for rev_dep in &invalid {
-        let diags = server.world.parse_and_typecheck(*rev_dep);
-        server.issue_diagnostics(*rev_dep, diags);
-    }
     Trace::reply(id);
     Ok(server.world.uris(invalid).cloned().collect())
 }
@@ -68,18 +62,24 @@ pub fn handle_close(
     let (new_file_id, invalid) = server.world.close_file(uri.clone())?;
     info!("Closed file {uri}");
 
-    if let Some(file_id) = new_file_id {
-        let diags = server.world.parse_and_typecheck(file_id);
-        server.issue_diagnostics(file_id, diags);
-    }
-
-    for rev_dep in &invalid {
-        let diags = server.world.parse_and_typecheck(*rev_dep);
-        server.issue_diagnostics(*rev_dep, diags);
-    }
-
     Trace::reply(id);
     Ok((new_file_id, server.world.uris(invalid).cloned().collect()))
+}
+
+pub fn run_diagnostics_on_file(server: &mut Server, req: DiagnosticsRequest) -> Result<()> {
+    let file_id = server
+        .world
+        .file_id(&req.uri)?
+        .ok_or_else(|| anyhow!("Could not find a matching File ID for {}", req.uri))?;
+    let diags = server.world.parse_and_typecheck(file_id);
+    server.issue_diagnostics(file_id, diags);
+    match req.priority {
+        Priority::High => server
+            .background_jobs
+            .priority_eval_file(req.uri, &server.world),
+        Priority::Normal => server.background_jobs.eval_file(req.uri, &server.world),
+    }
+    Ok(())
 }
 
 /// Returns a list of open files that were potentially invalidated by the changes.
@@ -98,18 +98,11 @@ pub fn handle_save(server: &mut Server, params: DidChangeTextDocumentParams) -> 
         },
     );
 
-    let (file_id, invalid) = server.world.update_file(
+    let (_, invalid) = server.world.update_file(
         params.text_document.uri.clone(),
         params.content_changes[0].text.clone(),
     )?;
 
-    let diags = server.world.parse_and_typecheck(file_id);
-    server.issue_diagnostics(file_id, diags);
-
-    for f in &invalid {
-        let errors = server.world.parse_and_typecheck(*f);
-        server.issue_diagnostics(*f, errors);
-    }
     Trace::reply(id);
     Ok(server.world.uris(invalid).cloned().collect())
 }

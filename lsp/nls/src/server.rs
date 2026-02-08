@@ -215,11 +215,18 @@ impl Server {
                 }
             }
             Task::HandleDocumentSync(req) => {
-                self.handle_document_sync(req);
+                if let Err(err) = self.handle_document_sync(req) {
+                    warn!("Document syncrhonization failed: {}", err);
+                };
                 Ok(Shutdown::Continue)
             }
 
-            Task::Diagnostics(_) => todo!(),
+            Task::Diagnostics(req) => {
+                if let Err(err) = crate::files::run_diagnostics_on_file(self, req) {
+                    warn!("Unable to publish diagnostics for a file: {}", err);
+                }
+                Ok(Shutdown::Continue)
+            }
         }
     }
 
@@ -229,9 +236,9 @@ impl Server {
                 trace!("handle open notification");
                 let uri = params.text_document.uri.clone();
                 let invalid = crate::files::handle_open(self, params)?;
-                self.background_jobs.priority_eval_file(uri, &self.world);
+                self.task_queue.add_diagnostics_task(uri);
                 for uri in invalid {
-                    self.background_jobs.eval_file(uri, &self.world);
+                    self.task_queue.add_diagnostics_task(uri);
                 }
                 Ok(())
             }
@@ -240,10 +247,10 @@ impl Server {
                 let uri = params.text_document.uri.clone();
                 let (new_file, invalid) = crate::files::handle_close(self, params)?;
                 if new_file.is_some() {
-                    self.background_jobs.eval_file(uri, &self.world);
+                    self.task_queue.add_diagnostics_task(uri);
                 }
                 for uri in invalid {
-                    self.background_jobs.eval_file(uri, &self.world);
+                    self.task_queue.add_diagnostics_task(uri);
                 }
                 Ok(())
             }
@@ -251,9 +258,9 @@ impl Server {
                 trace!("handle save notification");
                 let uri = params.text_document.uri.clone();
                 let invalid = crate::files::handle_save(self, params)?;
-                self.background_jobs.priority_eval_file(uri, &self.world);
+                self.task_queue.add_diagnostics_task(uri);
                 for uri in invalid {
-                    self.background_jobs.eval_file(uri, &self.world);
+                    self.task_queue.add_diagnostics_task(uri);
                 }
                 Ok(())
             }

@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    str::FromStr,
+};
 
 use anyhow::Result;
 use log::warn;
@@ -8,14 +11,32 @@ use lsp_types::{
     notification::{
         DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _,
     },
+    request::{ExecuteCommand, Request},
 };
 
+#[derive(Debug, Clone)]
 pub enum Task {
+    /// Handle an LSP request
     HandleRequest(lsp_server::Request),
+    /// Handle a document synchronization notification.
     HandleDocumentSync(DocumentSync),
-    Diagnostics(Url),
+    /// Publish diagnostics for a file
+    Diagnostics(DiagnosticsRequest),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Priority {
+    Normal,
+    High,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiagnosticsRequest {
+    pub uri: Url,
+    pub priority: Priority,
+}
+
+#[derive(Debug, Clone)]
 pub enum DocumentSync {
     DidOpenTextDocument(DidOpenTextDocumentParams),
     DidCloseTextDocument(DidCloseTextDocumentParams),
@@ -92,11 +113,13 @@ impl TaskQueue {
             DidOpenTextDocument::METHOD => {
                 let params =
                     serde_json::from_value::<DidOpenTextDocumentParams>(notification.params)?;
+                self.open_files.insert(params.text_document.uri.clone());
                 self.add_sync_task(DocumentSync::DidOpenTextDocument(params));
             }
             DidCloseTextDocument::METHOD => {
                 let params =
                     serde_json::from_value::<DidCloseTextDocumentParams>(notification.params)?;
+                self.open_files.remove(&params.text_document.uri);
                 self.add_sync_task(DocumentSync::DidCloseTextDocument(params));
             }
             DidChangeTextDocument::METHOD => {
@@ -114,23 +137,93 @@ impl TaskQueue {
     /// relevance. If no open files are out of date it will pick another out of date file in an
     /// arbitrary order.
     fn next_diagnostic(&mut self) -> Option<Task> {
-        let uri = self
+        if let Some(uri) = self
             .open_files
             .iter()
             .find(|file| self.diagnostics.contains(file))
-            .or_else(|| self.diagnostics.iter().next())
-            .cloned();
-        uri.map(|uri| {
+            .cloned()
+        {
             self.diagnostics.remove(&uri);
-            Task::Diagnostics(uri)
-        })
+            Some(Task::Diagnostics(DiagnosticsRequest {
+                uri: uri,
+                priority: Priority::High,
+            }))
+        } else if let Some(uri) = self.diagnostics.iter().next().cloned() {
+            self.diagnostics.remove(&uri);
+            Some(Task::Diagnostics(DiagnosticsRequest {
+                uri: uri,
+                priority: Priority::Normal,
+            }))
+        } else {
+            None
+        }
     }
 
     /// Get the next request to handle if there's one pending.
     fn next_request(&mut self) -> Option<Task> {
-        self.requests
-            .pop_front()
-            .map(|req| Task::HandleRequest(req))
+        enum RequestCategory {
+            EvalCommand(Url),
+            TextDocumentUri(Url),
+            Other,
+        }
+
+        fn categorize(req: &lsp_server::Request) -> RequestCategory {
+            let is_eval_command = req.method == ExecuteCommand::METHOD
+                && req.params["command"].as_str() == Some("eval");
+            if is_eval_command {
+                let uri = req.params["arguments"]
+                    .as_array()
+                    .and_then(|args| args.first())
+                    .and_then(|arg| arg["uri"].as_str())
+                    .and_then(|url| Url::from_str(url).ok());
+                return match uri {
+                    Some(uri) => RequestCategory::EvalCommand(uri),
+                    None => RequestCategory::Other,
+                };
+            };
+
+            // This should get the document URI for any request type extending TextDocumentPositionParams
+            // in the LSP spec. https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocumentPositionParams
+            let uri = req.params["textDocument"]["uri"]
+                .as_str()
+                .and_then(|uri| Url::from_str(uri).ok());
+            match uri {
+                Some(uri) => RequestCategory::TextDocumentUri(uri),
+                None => RequestCategory::Other,
+            }
+        }
+
+        if let Some(next_request) = self.requests.front() {
+            let task = match categorize(next_request) {
+                RequestCategory::EvalCommand(uri) => {
+                    // The eval command publishes the new diagnostics for a file
+                    // synchronously, so if there were a pending update to the diagnostics for a
+                    // file, we can remove it.
+                    self.diagnostics.remove(&uri);
+                    Task::HandleRequest(self.requests.pop_front().unwrap())
+                }
+                RequestCategory::TextDocumentUri(uri) => {
+                    // Most of the request handlers expect the file to be parsed and typechecked
+                    // already before the handler is run. If the request specifies a file URI, and
+                    // the diagnostics on that URI are out of date, then the diagnostics task will
+                    // need to be run first before the request can be handled. That will ensure
+                    // that parsing and typechecking are current before the request handler is run.
+                    if self.diagnostics.contains(&uri) {
+                        self.diagnostics.remove(&uri);
+                        Task::Diagnostics(DiagnosticsRequest {
+                            uri: uri,
+                            priority: Priority::High,
+                        })
+                    } else {
+                        Task::HandleRequest(self.requests.pop_front().unwrap())
+                    }
+                }
+                RequestCategory::Other => Task::HandleRequest(self.requests.pop_front().unwrap()),
+            };
+            Some(task)
+        } else {
+            None
+        }
     }
 
     /// Gets the document synchronization task that needs to be done if there is one.
