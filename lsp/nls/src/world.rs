@@ -13,7 +13,8 @@ use lsp_types::{TextDocumentPositionParams, Url};
 use nickel_lang_core::{
     ast::{Ast, Import, Node, pattern::bindings::Bindings as _, primop::PrimOp},
     cache::{
-        AstImportResolver, CacheHub, ImportData, ImportTarget, InputFormat, SourceCache, SourcePath,
+        AstImportResolver, CacheHub, ImportData, ImportTarget, InputFormat, SourceCache,
+        SourcePath, normalize_path,
     },
     error::{ImportErrorKind, IntoDiagnostics, ParseErrors},
     eval::{VirtualMachine, VmContext, cache::CacheImpl, value::NickelValue},
@@ -1161,7 +1162,17 @@ impl AstImportResolver for WorldImportResolver<'_, '_> {
                 )
             })?;
 
-        let url = Url::from_file_path(import_path).unwrap();
+        // Import file paths get returned relative to the file that they were imported from, so we
+        // want to normalize the path so that the same file imported from different files end up as
+        // the same file URI.
+        let url = match normalize_path(import_path) {
+            Ok(absolute_path) => Url::from_file_path(absolute_path).unwrap(),
+            // This error case shouldn't ever happen, but inserting the relative uri shouldn't
+            // cause major problems, mostly just inefficiency. So it's not worth failing the
+            // resolution over.
+            Err(_) => Url::from_file_path(path).unwrap(),
+        };
+
         self.file_uris.insert(file_id, url.clone());
 
         if let Some(parent_id) = parent_id {
