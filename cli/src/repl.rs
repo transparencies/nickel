@@ -16,6 +16,8 @@ impl ReplCommand {
         let histfile = self
             .history_file
             .or_else(|| BaseDirs::new().map(|bd| bd.home_dir().join(".nickel_history")));
+        println!("Nickel {}", env!("CARGO_PKG_VERSION"));
+        println!("Type \":help\" for help, or \":exit\" to exit");
         ctxt.reporter.report_result(rustyline_frontend::repl(
             histfile,
             color_opt_from_clap(ctxt.opts.color),
