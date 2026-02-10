@@ -5323,5 +5323,19 @@
       # => error: message
       ```
     "%
-    = fun msg => null | FailWith msg,
+    =
+      # Blaming the message argument is a cheap way to get `fail_with` errors to
+      # show a meaningful location, instead of pointing into the stdlib only
+      let Blame =
+        %contract/custom% (fun _label msg =>
+          'Error {
+            message = msg,
+            notes = [
+              "This error comes from an explicit call to `std.fail_with`",
+              "The provided message is blamed as a way to localize the offending call, but isn't the root cause of the contract violation",
+            ],
+          }
+        )
+      in
+      fun msg => msg | Blame,
 }
