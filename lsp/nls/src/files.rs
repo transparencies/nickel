@@ -66,6 +66,8 @@ pub fn handle_close(
     Ok((new_file_id, server.world.uris(invalid).cloned().collect()))
 }
 
+/// Updates the diagnostics for a file. This will synchronously publish parsing and typechecking
+/// diagnostics for the file, as well as creating a background job for evaluation of the file.
 pub fn run_diagnostics_on_file(server: &mut Server, req: DiagnosticsRequest) -> Result<()> {
     let file_id = server
         .world
