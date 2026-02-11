@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::Result;
-use log::{debug, warn};
+use log::debug;
 use lsp_server::{Message, Notification};
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Url,
@@ -58,16 +58,27 @@ impl DocumentSync {
     }
 }
 
+/// Something that is either an LSP request or a document synchronization notification.
+enum ReqOrSync {
+    Request(lsp_server::Request),
+    DocumentSync(DocumentSync),
+}
+
 pub struct TaskQueue {
-    /// LSP requests that need to be handled. These are processed in the order that they are
-    /// received.
-    requests: VecDeque<lsp_server::Request>,
+    /// LSP requests and document synchronization tasks that need to be handled. They are processed
+    /// in the order that they are received.
+    ///
+    /// The ordering is important because many requests reference a position in a document. If a
+    /// request is sent and a document change notification follows it, then applying the document
+    /// change could cause the request's position to point somewhere the user did not expect. It
+    /// may often be the case that if the document changes after a request is made then the
+    /// response to the request may no longer be useful, but the LSP spec recommends that the
+    /// server should not make the decision to cancel a request in most cases, instead the client
+    /// should send a cancellation notification if the response is no longer needed.
+    request_or_sync: VecDeque<ReqOrSync>,
     /// The set of files that are currently open in memory. This is used to prioritize tasks
     /// for open files.
     open_files: HashSet<Url>,
-    /// Document synchronization tasks that need to be handled. These are created by LSP
-    /// notifications like DidChangeTextDocument.
-    sync_tasks: HashMap<Url, VecDeque<DocumentSync>>,
     /// The set of files that need updated diagnostics published for them.
     diagnostics: HashSet<Url>,
 }
@@ -75,9 +86,8 @@ pub struct TaskQueue {
 impl TaskQueue {
     pub fn new() -> Self {
         TaskQueue {
-            requests: VecDeque::new(),
+            request_or_sync: VecDeque::new(),
             open_files: HashSet::new(),
-            sync_tasks: HashMap::new(),
             diagnostics: HashSet::new(),
         }
     }
@@ -86,7 +96,7 @@ impl TaskQueue {
     pub fn queue_message(&mut self, msg: Message) -> Result<()> {
         match msg {
             Message::Request(req) => {
-                self.requests.push_back(req);
+                self.request_or_sync.push_back(ReqOrSync::Request(req));
                 Ok(())
             }
             Message::Notification(notification) => self.queue_notification(notification),
@@ -96,14 +106,8 @@ impl TaskQueue {
 
     /// Add a task to apply a document synchronization notification
     fn add_sync_task(&mut self, task: DocumentSync) {
-        if let Some(queue) = self.sync_tasks.get_mut(task.uri()) {
-            queue.push_back(task);
-        } else {
-            let uri = task.uri().clone();
-            let mut queue = VecDeque::new();
-            queue.push_back(task);
-            self.sync_tasks.insert(uri, queue);
-        }
+        self.request_or_sync
+            .push_back(ReqOrSync::DocumentSync(task));
     }
 
     /// Add a task to publish updated diagnostics on a file.
@@ -164,7 +168,7 @@ impl TaskQueue {
     }
 
     /// Get the next request to handle if there's one pending.
-    fn next_request(&mut self) -> Option<Task> {
+    fn next_request_or_sync(&mut self) -> Option<Task> {
         // There's a few types of requests that the queue will handle differently. These categories
         // will determine that handling.
         enum RequestCategory {
@@ -201,76 +205,47 @@ impl TaskQueue {
                 None => RequestCategory::Other,
             }
         }
-
-        if let Some(next_request) = self.requests.front() {
-            let task = match categorize(next_request) {
-                RequestCategory::EvalCommand(uri) => {
-                    // The eval command publishes the new diagnostics for a file
-                    // synchronously, so if there were a pending update to the diagnostics for a
-                    // file, we can remove it.
-                    self.diagnostics.remove(&uri);
-                    Task::HandleRequest(self.requests.pop_front().unwrap())
-                }
-                RequestCategory::TextDocumentUri(uri) => {
-                    // Most of the request handlers expect the file to be parsed and typechecked
-                    // already before the handler is run. If the request specifies a file URI, and
-                    // the diagnostics on that URI are out of date, then the diagnostics task will
-                    // need to be run first before the request can be handled. That will ensure
-                    // that parsing and typechecking are current before the request handler is run.
-                    if self.diagnostics.contains(&uri) {
+        match self.request_or_sync.pop_front() {
+            Some(ReqOrSync::DocumentSync(task)) => Some(Task::HandleDocumentSync(task)),
+            Some(ReqOrSync::Request(req)) => {
+                let task = match categorize(&req) {
+                    RequestCategory::EvalCommand(uri) => {
+                        // The eval command publishes the new diagnostics for a file
+                        // synchronously, so if there were a pending update to the diagnostics for a
+                        // file, we can remove it.
                         self.diagnostics.remove(&uri);
-                        Task::Diagnostics(DiagnosticsRequest {
-                            uri: uri,
-                            priority: Priority::High,
-                        })
-                    } else {
-                        Task::HandleRequest(self.requests.pop_front().unwrap())
+                        Task::HandleRequest(req)
                     }
-                }
-                RequestCategory::Other => Task::HandleRequest(self.requests.pop_front().unwrap()),
-            };
-            Some(task)
-        } else {
-            None
+                    RequestCategory::TextDocumentUri(uri) => {
+                        // Most of the request handlers expect the file to be parsed and typechecked
+                        // already before the handler is run. If the request specifies a file URI, and
+                        // the diagnostics on that URI are out of date, then the diagnostics task will
+                        // need to be run first before the request can be handled. That will ensure
+                        // that parsing and typechecking are current before the request handler is run.
+                        if self.diagnostics.contains(&uri) {
+                            self.diagnostics.remove(&uri);
+
+                            // Put the request back into its same place in the queue so it gets
+                            // handled after parsing and typechecking are finished.
+                            self.request_or_sync.push_front(ReqOrSync::Request(req));
+                            Task::Diagnostics(DiagnosticsRequest {
+                                uri: uri,
+                                priority: Priority::High,
+                            })
+                        } else {
+                            Task::HandleRequest(req)
+                        }
+                    }
+                    RequestCategory::Other => Task::HandleRequest(req),
+                };
+                Some(task)
+            }
+            None => None,
         }
     }
 
-    /// Gets the document synchronization task that needs to be done if there is one.
-    fn next_sync_task(&mut self) -> Option<Task> {
-        // All document synchronization tasks get completed before doing anything else anyway so
-        // these are just done in an arbitrary order.
-        let next_url = self.sync_tasks.keys().next().cloned();
-        next_url.map(|url| {
-            // unwrap(): We know next_url was in the keys so the entry must exist.
-            let queue = self.sync_tasks.get_mut(&url).unwrap();
-            // unwrap(): If an entry is created for a url, it will always have at least one
-            // task, and if the queue for that url is emptied out, the entry will be deleted. This
-            // should never be empty.
-            let mut next_task = queue.pop_front().unwrap();
-            if next_task.is_did_change_text_document() {
-                while queue
-                    .front()
-                    .map(|it| it.is_did_change_text_document())
-                    .unwrap_or(false)
-                {
-                    // unwrap(): This only runs when we've found an entry with `front()`
-                    next_task = queue.pop_front().unwrap();
-                }
-            };
-
-            // The entry removed because everything previous assumes that an entry must have at least
-            // one task.
-            if queue.is_empty() {
-                self.sync_tasks.remove(&url);
-            }
-
-            Task::HandleDocumentSync(next_task)
-        })
-    }
-
     pub fn next_task(&mut self) -> Option<Task> {
-        self.next_sync_task()
-            .or_else(|| self.next_request())
+        self.next_request_or_sync()
             .or_else(|| self.next_diagnostic())
     }
 }
@@ -353,6 +328,16 @@ mod test {
 
         queue.add_diagnostics_task(Url::from_file_path("/test3.ncl").unwrap());
 
+        let req = Request::new(
+            123.into(),
+            ExecuteCommand::METHOD.into(),
+            json!({
+                "command":"eval",
+                "arguments":[{"uri": "file:///test2.ncl"}]
+            }),
+        );
+        queue.queue_message(Message::Request(req)).unwrap();
+
         let notification = Notification::new(
             DidCloseTextDocument::METHOD.into(),
             json!({
@@ -365,18 +350,10 @@ mod test {
             .queue_message(Message::Notification(notification))
             .unwrap();
 
-        let req = Request::new(
-            123.into(),
-            ExecuteCommand::METHOD.into(),
-            json!({
-                "command":"eval",
-                "arguments":[{"uri": "file:///test2.ncl"}]
-            }),
-        );
-        queue.queue_message(Message::Request(req)).unwrap();
-
-        assert_matches!(queue.next_task().unwrap(), Task::HandleDocumentSync(_));
+        // Diagnostics should be handled after other task types even if the task was pushed first.
+        // Other task types should be processed in the order they're received.
         assert_matches!(queue.next_task().unwrap(), Task::HandleRequest(_));
+        assert_matches!(queue.next_task().unwrap(), Task::HandleDocumentSync(_));
         assert_matches!(queue.next_task().unwrap(), Task::Diagnostics(_));
         assert!(queue.next_task().is_none());
     }
@@ -480,50 +457,6 @@ mod test {
         let task = queue.next_task().unwrap();
         assert_matches!(task, Task::HandleRequest(_));
         // There should no longer be a diagnostic task to return here.
-        assert!(queue.next_task().is_none());
-    }
-
-    #[test]
-    fn out_of_date_doc_changes_are_dropped() {
-        let mut queue = TaskQueue::new();
-
-        let notification1 = Notification::new(
-            DidChangeTextDocument::METHOD.into(),
-            json!({
-                "textDocument":{
-                    "uri":"file:///test.ncl",
-                    "version":8
-                },
-                "contentChanges":[{"text":"1 + 1"}]
-            }),
-        );
-        let notification2 = Notification::new(
-            DidChangeTextDocument::METHOD.into(),
-            json!({
-                "textDocument":{
-                    "uri":"file:///test.ncl",
-                    "version":9
-                },
-                "contentChanges":[{"text":"2 + 2"}]
-            }),
-        );
-
-        queue
-            .queue_message(Message::Notification(notification1))
-            .unwrap();
-        queue
-            .queue_message(Message::Notification(notification2))
-            .unwrap();
-
-        let task = queue.next_task().unwrap();
-        // The file version returned should be the last one to be queued.
-        match task {
-            Task::HandleDocumentSync(DocumentSync::DidChangeTextDocument(params)) => {
-                assert_eq!(params.text_document.version, 9)
-            }
-            _ => panic!("Got wrong task type."),
-        }
-        // No further diagnostics tasks should be returned, the first one should have been dropped.
         assert!(queue.next_task().is_none());
     }
 
