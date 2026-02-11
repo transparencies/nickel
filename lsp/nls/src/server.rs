@@ -174,16 +174,6 @@ impl Server {
             }
         }
 
-        // TODO: I'm not clear what was is doing since my impression was that to get here either
-        // the server was already shutting down or the connection was closed. If it was doing
-        // something I'll have to figure out how to handle it.
-        //
-        // while let Ok(msg) = self.connection.receiver.recv() {
-        //    if self.handle_message(msg)? == Shutdown::Shutdown {
-        //        break;
-        //    }
-        //}
-
         Ok(())
     }
 
@@ -216,7 +206,7 @@ impl Server {
             }
             Task::HandleDocumentSync(req) => {
                 if let Err(err) = self.handle_document_sync(req) {
-                    warn!("Document syncrhonization failed: {}", err);
+                    warn!("Document synchronization failed: {}", err);
                 };
                 Ok(Shutdown::Continue)
             }
@@ -232,7 +222,7 @@ impl Server {
 
     fn handle_document_sync(&mut self, task: DocumentSync) -> Result<()> {
         match task {
-            DocumentSync::DidOpenTextDocument(params) => {
+            DocumentSync::Open(params) => {
                 trace!("handle open notification");
                 let uri = params.text_document.uri.clone();
                 let invalid = crate::files::handle_open(self, params)?;
@@ -242,7 +232,7 @@ impl Server {
                 }
                 Ok(())
             }
-            DocumentSync::DidCloseTextDocument(params) => {
+            DocumentSync::Close(params) => {
                 trace!("handle close notification");
                 let uri = params.text_document.uri.clone();
                 let (new_file, invalid) = crate::files::handle_close(self, params)?;
@@ -254,7 +244,7 @@ impl Server {
                 }
                 Ok(())
             }
-            DocumentSync::DidChangeTextDocument(params) => {
+            DocumentSync::Change(params) => {
                 trace!("handle save notification");
                 let uri = params.text_document.uri.clone();
                 let invalid = crate::files::handle_save(self, params)?;

@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashSet, VecDeque},
     str::FromStr,
 };
 
@@ -38,24 +38,9 @@ pub struct DiagnosticsRequest {
 
 #[derive(Debug, Clone)]
 pub enum DocumentSync {
-    DidOpenTextDocument(DidOpenTextDocumentParams),
-    DidCloseTextDocument(DidCloseTextDocumentParams),
-    DidChangeTextDocument(DidChangeTextDocumentParams),
-}
-
-impl DocumentSync {
-    /// Get the URI of the document that this task applies to.
-    fn uri(&self) -> &Url {
-        match self {
-            DocumentSync::DidChangeTextDocument(params) => &params.text_document.uri,
-            DocumentSync::DidOpenTextDocument(params) => &params.text_document.uri,
-            DocumentSync::DidCloseTextDocument(params) => &params.text_document.uri,
-        }
-    }
-
-    fn is_did_change_text_document(&self) -> bool {
-        matches!(self, DocumentSync::DidChangeTextDocument(_))
-    }
+    Open(DidOpenTextDocumentParams),
+    Close(DidCloseTextDocumentParams),
+    Change(DidChangeTextDocumentParams),
 }
 
 /// Something that is either an LSP request or a document synchronization notification.
@@ -122,18 +107,18 @@ impl TaskQueue {
                 let params =
                     serde_json::from_value::<DidOpenTextDocumentParams>(notification.params)?;
                 self.open_files.insert(params.text_document.uri.clone());
-                self.add_sync_task(DocumentSync::DidOpenTextDocument(params));
+                self.add_sync_task(DocumentSync::Open(params));
             }
             DidCloseTextDocument::METHOD => {
                 let params =
                     serde_json::from_value::<DidCloseTextDocumentParams>(notification.params)?;
                 self.open_files.remove(&params.text_document.uri);
-                self.add_sync_task(DocumentSync::DidCloseTextDocument(params));
+                self.add_sync_task(DocumentSync::Close(params));
             }
             DidChangeTextDocument::METHOD => {
                 let params =
                     serde_json::from_value::<DidChangeTextDocumentParams>(notification.params)?;
-                self.add_sync_task(DocumentSync::DidChangeTextDocument(params));
+                self.add_sync_task(DocumentSync::Change(params));
             }
             method => debug!("No handler for notification type {}", method),
         };
@@ -153,13 +138,13 @@ impl TaskQueue {
         {
             self.diagnostics.remove(&uri);
             Some(Task::Diagnostics(DiagnosticsRequest {
-                uri: uri,
+                uri,
                 priority: Priority::High,
             }))
         } else if let Some(uri) = self.diagnostics.iter().next().cloned() {
             self.diagnostics.remove(&uri);
             Some(Task::Diagnostics(DiagnosticsRequest {
-                uri: uri,
+                uri,
                 priority: Priority::Normal,
             }))
         } else {
@@ -229,7 +214,7 @@ impl TaskQueue {
                             // handled after parsing and typechecking are finished.
                             self.request_or_sync.push_front(ReqOrSync::Request(req));
                             Task::Diagnostics(DiagnosticsRequest {
-                                uri: uri,
+                                uri,
                                 priority: Priority::High,
                             })
                         } else {
@@ -255,7 +240,7 @@ mod test {
     use super::*;
     use assert_matches::assert_matches;
     use lsp_server::Request;
-    use lsp_types::request::{ExecuteCommand, Request as RequestTrait};
+    use lsp_types::request::{ExecuteCommand, GotoDefinition, Request as RequestTrait};
     use serde_json::json;
 
     #[test]
@@ -294,10 +279,7 @@ mod test {
             .queue_message(Message::Notification(notification))
             .unwrap();
         let task = queue.next_task().unwrap();
-        assert_matches!(
-            task,
-            Task::HandleDocumentSync(DocumentSync::DidChangeTextDocument(_))
-        );
+        assert_matches!(task, Task::HandleDocumentSync(DocumentSync::Change(_)));
         // Check if the task has been removed.
         assert!(queue.next_task().is_none());
     }
@@ -492,11 +474,30 @@ mod test {
 
         assert_matches!(
             queue.next_task().unwrap(),
-            Task::HandleDocumentSync(DocumentSync::DidOpenTextDocument(_))
+            Task::HandleDocumentSync(DocumentSync::Open(_))
         );
         assert_matches!(
             queue.next_task().unwrap(),
-            Task::HandleDocumentSync(DocumentSync::DidCloseTextDocument(_))
+            Task::HandleDocumentSync(DocumentSync::Close(_))
         );
+    }
+
+    #[test]
+    fn parse_and_typecheck_run_before_request() {
+        let mut queue = TaskQueue::new();
+        let req = Request::new(
+            123.into(),
+            GotoDefinition::METHOD.into(),
+            json!({
+                "textDocument":{
+                    "uri":"file:///test.ncl"
+                },
+                "position":{"line":11,"character":20}
+            }),
+        );
+        queue.queue_message(Message::Request(req)).unwrap();
+        queue.add_diagnostics_task(Url::from_file_path("/test.ncl").unwrap());
+        assert_matches!(queue.next_task().unwrap(), Task::Diagnostics(_));
+        assert_matches!(queue.next_task().unwrap(), Task::HandleRequest(_));
     }
 }
