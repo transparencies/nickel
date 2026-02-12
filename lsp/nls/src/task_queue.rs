@@ -287,7 +287,7 @@ mod test {
     #[test]
     fn queue_diagnostics() {
         let mut queue = TaskQueue::new();
-        let uri = Url::from_file_path("/test.ncl").unwrap();
+        let uri: Url = "file:///test.ncl".parse().unwrap();
         queue.add_diagnostics_task(uri.clone());
         let task = queue.next_task().unwrap();
         match task {
@@ -308,7 +308,7 @@ mod test {
     fn check_task_priority() {
         let mut queue = TaskQueue::new();
 
-        queue.add_diagnostics_task(Url::from_file_path("/test3.ncl").unwrap());
+        queue.add_diagnostics_task("file:///test3.ncl".parse().unwrap());
 
         let req = Request::new(
             123.into(),
@@ -360,16 +360,14 @@ mod test {
         assert!(
             queue
                 .open_files
-                .contains(&Url::from_file_path("/test.ncl").unwrap())
+                .contains(&"file:///test.ncl".parse().unwrap())
         )
     }
 
     #[test]
     fn didclose_notification_closes_file() {
         let mut queue = TaskQueue::new();
-        queue
-            .open_files
-            .insert(Url::from_file_path("/test.ncl").unwrap());
+        queue.open_files.insert("file:///test.ncl".parse().unwrap());
         let notification = Notification::new(
             DidCloseTextDocument::METHOD.into(),
             json!({
@@ -387,14 +385,14 @@ mod test {
     #[test]
     fn open_file_diagnostics_are_high_priority() {
         let mut queue = TaskQueue::new();
-        let uri = Url::from_file_path("/test.ncl").unwrap();
+        let uri: Url = "file:///test.ncl".parse().unwrap();
         queue.open_files.insert(uri.clone());
         queue.add_diagnostics_task(uri.clone());
 
         // If open files weren't prioritized it's likely we'd see one of these other files rather
         // than /test.ncl
         for x in 1..500 {
-            queue.add_diagnostics_task(Url::from_file_path(format!("/{}.ncl", x)).unwrap());
+            queue.add_diagnostics_task(format!("file:///{}.ncl", x).parse().unwrap());
         }
 
         let task = queue.next_task().unwrap();
@@ -413,7 +411,7 @@ mod test {
     #[test]
     fn diagnostics_requests_for_the_same_document_are_evaluated_once() {
         let mut queue = TaskQueue::new();
-        let uri = Url::from_file_path("/test.ncl").unwrap();
+        let uri: Url = "file:///test.ncl".parse().unwrap();
         queue.add_diagnostics_task(uri.clone());
         queue.add_diagnostics_task(uri.clone());
         queue.add_diagnostics_task(uri.clone());
@@ -425,7 +423,7 @@ mod test {
     #[test]
     fn eval_command_clears_diagnostic_request() {
         let mut queue = TaskQueue::new();
-        queue.add_diagnostics_task(Url::from_file_path("/test.ncl").unwrap());
+        queue.add_diagnostics_task("file:///test.ncl".parse().unwrap());
         let req = Request::new(
             123.into(),
             ExecuteCommand::METHOD.into(),
@@ -496,7 +494,7 @@ mod test {
             }),
         );
         queue.queue_message(Message::Request(req)).unwrap();
-        queue.add_diagnostics_task(Url::from_file_path("/test.ncl").unwrap());
+        queue.add_diagnostics_task("file:///test.ncl".parse().unwrap());
         assert_matches!(queue.next_task().unwrap(), Task::Diagnostics(_));
         assert_matches!(queue.next_task().unwrap(), Task::HandleRequest(_));
     }
