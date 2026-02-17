@@ -65,7 +65,7 @@ pub struct TaskQueue {
     /// for open files.
     open_files: HashSet<Url>,
     /// The set of files that need updated diagnostics published for them.
-    diagnostics: HashSet<Url>,
+    stale_diagnostics: HashSet<Url>,
 }
 
 impl TaskQueue {
@@ -73,7 +73,7 @@ impl TaskQueue {
         TaskQueue {
             request_or_sync: VecDeque::new(),
             open_files: HashSet::new(),
-            diagnostics: HashSet::new(),
+            stale_diagnostics: HashSet::new(),
         }
     }
 
@@ -97,7 +97,7 @@ impl TaskQueue {
 
     /// Add a task to publish updated diagnostics on a file.
     pub fn add_diagnostics_task(&mut self, uri: Url) {
-        self.diagnostics.insert(uri);
+        self.stale_diagnostics.insert(uri);
     }
 
     /// Takes an LSP notification and adds a task if needed.
@@ -133,16 +133,16 @@ impl TaskQueue {
         if let Some(uri) = self
             .open_files
             .iter()
-            .find(|file| self.diagnostics.contains(file))
+            .find(|file| self.stale_diagnostics.contains(file))
             .cloned()
         {
-            self.diagnostics.remove(&uri);
+            self.stale_diagnostics.remove(&uri);
             Some(Task::Diagnostics(DiagnosticsRequest {
                 uri,
                 priority: Priority::High,
             }))
-        } else if let Some(uri) = self.diagnostics.iter().next().cloned() {
-            self.diagnostics.remove(&uri);
+        } else if let Some(uri) = self.stale_diagnostics.iter().next().cloned() {
+            self.stale_diagnostics.remove(&uri);
             Some(Task::Diagnostics(DiagnosticsRequest {
                 uri,
                 priority: Priority::Normal,
@@ -198,7 +198,7 @@ impl TaskQueue {
                         // The eval command publishes the new diagnostics for a file
                         // synchronously, so if there were a pending update to the diagnostics for a
                         // file, we can remove it.
-                        self.diagnostics.remove(&uri);
+                        self.stale_diagnostics.remove(&uri);
                         Task::HandleRequest(req)
                     }
                     RequestCategory::TextDocumentUri(uri) => {
@@ -207,8 +207,8 @@ impl TaskQueue {
                         // the diagnostics on that URI are out of date, then the diagnostics task will
                         // need to be run first before the request can be handled. That will ensure
                         // that parsing and typechecking are current before the request handler is run.
-                        if self.diagnostics.contains(&uri) {
-                            self.diagnostics.remove(&uri);
+                        if self.stale_diagnostics.contains(&uri) {
+                            self.stale_diagnostics.remove(&uri);
 
                             // Put the request back into its same place in the queue so it gets
                             // handled after parsing and typechecking are finished.
