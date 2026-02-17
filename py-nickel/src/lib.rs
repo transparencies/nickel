@@ -70,7 +70,10 @@ pub fn run(expr: String, import_paths: Option<Vec<OsString>>) -> PyResult<String
 }
 
 #[pymodule]
-pub fn nickel(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(run, m)?)?;
-    Ok(())
+mod nickel {
+    #[pymodule_export]
+    use super::run;
+
+    #[pymodule_export]
+    use super::NickelException;
 }
