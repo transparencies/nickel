@@ -159,7 +159,7 @@ impl TaskQueue {
         enum RequestCategory {
             /// ExecuteCommand request for the "eval" command
             EvalCommand(Url),
-            /// Any request extending extending TextDocumentPositionParams in the LSP spec.
+            /// Any request extending TextDocumentPositionParams in the LSP spec.
             /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocumentPositionParams
             TextDocumentUri(Url),
             Other,
