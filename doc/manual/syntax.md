@@ -248,15 +248,16 @@ ending.
 A backslash `` \ `` followed by one or more characters is interpreted as an
 escape sequence. The following escape sequences are supported:
 
-|    Escape sequence | Description                                    |
-|:------------------:|:-----------------------------------------------|
-| `\\`               | Backslash `` \ ``                              |
-| `\"`               | Double quote `"`                               |
-| `\n`               | New line                                       |
-| `\t`               | Tab                                            |
-| `\r`               | Carriage return                                |
-| `\%`               | Percent sign `%`                               |
-| `\x[a-zA-Z0-9]{2}` | Ascii code sequence (e.g. `\x20` is a space)   |
+|    Escape sequence     | Description                                                                                                                  |
+|:----------------------:|:-----------------------------------------------------------------------------------------------------------------------------|
+| `\\`                   | Backslash `` \ ``                                                                                                            |
+| `\"`                   | Double quote `"`                                                                                                             |
+| `\n`                   | New line                                                                                                                     |
+| `\t`                   | Tab                                                                                                                          |
+| `\r`                   | Carriage return                                                                                                              |
+| `\%`                   | Percent sign `%`                                                                                                             |
+| `\x[a-fA-F0-9]{2}`     | Ascii code sequence (e.g. `\x20` is a space)                                                                                 |
+| `\u{[a-fA-F0-9]{1,6}}` | Unicode code sequence. These are variable length, so for example `\u{61}` is the letter 'a' and `\u{1f62d}` is the 😭 emoji. |
 
 #### Symbolic Strings
 

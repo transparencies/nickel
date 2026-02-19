@@ -19,6 +19,8 @@ pub enum LexicalError {
     InvalidEscapeSequence(usize),
     /// Invalid escape ASCII code in a string literal.
     InvalidAsciiEscapeCode(usize),
+    /// Invalid unicode escape code in a string literal.
+    InvalidUnicodeEscapeCode(Range<usize>),
     /// A multiline string was closed with a delimiter which has a `%` count higher than the
     /// opening delimiter.
     StringDelimiterMismatch {
@@ -112,6 +114,8 @@ pub enum ParseError {
     InvalidEscapeSequence(RawSpan),
     /// Invalid ASCII escape code in a string literal.
     InvalidAsciiEscapeCode(RawSpan),
+    /// Invalid unicode escape code in a string literal.
+    InvalidUnicodeEscapeCode(RawSpan),
     /// A multiline string was closed with a delimiter which has a `%` count higher than the
     /// opening delimiter.
     StringDelimiterMismatch {
@@ -265,6 +269,9 @@ impl ParseError {
             }
             LexicalError::InvalidAsciiEscapeCode(location) => {
                 ParseError::InvalidAsciiEscapeCode(mk_span(file_id, location, location + 2))
+            }
+            LexicalError::InvalidUnicodeEscapeCode(location) => {
+                ParseError::InvalidUnicodeEscapeCode(mk_span(file_id, location.start, location.end))
             }
             LexicalError::StringDelimiterMismatch {
                 opening_delimiter,

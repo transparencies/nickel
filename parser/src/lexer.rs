@@ -484,6 +484,11 @@ pub enum StringToken<'input> {
     // Repetition range `{2}` was not supported at the time of writing this regex.
     #[regex("\\\\x[A-Fa-f0-9][A-Fa-f0-9]", |lex| &lex.slice()[2..4])]
     EscapedAscii(&'input str),
+    #[regex("\\\\u\\{[A-Fa-f0-9]{1,6}\\}", |lex| {
+        let len = lex.slice().len();
+        &lex.slice()[3..(len - 1)]
+    })]
+    EscapedUnicode(&'input str),
 }
 
 /// The tokens in multiline string mode.
@@ -863,6 +868,15 @@ impl<'input> Lexer<'input> {
                     return Some(Err(LexicalError::InvalidAsciiEscapeCode(span.start + 2)));
                 }
             }
+            StringToken::EscapedUnicode(code) => {
+                if let Some(esc) = escape_unicode(code) {
+                    Token::Str(StringToken::EscapedChar(esc))
+                } else {
+                    let start = span.start + 3;
+                    let end = start + code.len();
+                    return Some(Err(LexicalError::InvalidUnicodeEscapeCode(start..end)));
+                }
+            }
             StringToken::Error => {
                 return Some(Err(LexicalError::Generic(span)));
             }
@@ -1084,6 +1098,10 @@ fn escape_ascii(code: &str) -> Option<char> {
     } else {
         Some(code as char)
     }
+}
+
+fn escape_unicode(code: &str) -> Option<char> {
+    u32::from_str_radix(code, 16).ok().and_then(char::from_u32)
 }
 
 /// Normalize the line endings in `s` to only `\n` and, in debug mode, check
