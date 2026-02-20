@@ -119,15 +119,20 @@ fn refresh_missing_imports() {
     let dep_uri = file_url_from_path("/dep.ncl").unwrap();
     harness.send_file(dep_uri.clone(), "42");
 
-    // Check that we get back clean diagnostics for both files.
-    // (LSP doesn't define the order, but we happen to know it)
-    let diags = harness.wait_for_diagnostics();
-    assert!(diags.diagnostics.is_empty());
-    assert_eq!(diags.uri, dep_uri);
+    // Diagnostics can arrive in any order so we need to figure out
+    // which is which.
+    let (test_diags, dep_diags) = match (
+        harness.wait_for_diagnostics(),
+        harness.wait_for_diagnostics(),
+    ) {
+        (test, dep) if test.uri == test_uri => (test, dep),
+        (dep, test) => (test, dep),
+    };
 
-    let diags = harness.wait_for_diagnostics();
-    assert!(diags.diagnostics.is_empty());
-    assert_eq!(diags.uri, test_uri);
+    assert!(test_diags.diagnostics.is_empty());
+    assert_eq!(test_diags.uri, test_uri);
+    assert!(dep_diags.diagnostics.is_empty());
+    assert_eq!(dep_diags.uri, dep_uri);
 }
 
 #[test]
