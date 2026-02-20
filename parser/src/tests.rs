@@ -574,6 +574,76 @@ fn ascii_escape() {
     );
 }
 
+#[test]
+fn unicode_escape() {
+    let alloc = AstAlloc::new();
+
+    // escape code should be in braces
+    assert_matches!(
+        parse(&alloc, "\"\\ue7a8\""),
+        Err(ParseError::InvalidEscapeSequence(..))
+    );
+    // Braces need to be closed
+    assert_matches!(
+        parse(&alloc, "\"\\u{e7a8\""),
+        Err(ParseError::InvalidEscapeSequence(..))
+    );
+
+    // only hex characters should be matched
+    assert_matches!(
+        parse(&alloc, "\"\\u{012z}\""),
+        Err(ParseError::InvalidEscapeSequence(..))
+    );
+
+    // A code is required in the braces
+    assert_matches!(
+        parse(&alloc, "\"\\u{}\""),
+        Err(ParseError::InvalidEscapeSequence(..))
+    );
+    // Numbers above the top of the unicode range should fail
+    assert_matches!(
+        parse(&alloc, "\"\\u{110000}\""),
+        Err(ParseError::InvalidUnicodeEscapeCode(..))
+    );
+    // Upper limit of six character codes
+    assert_matches!(
+        parse(&alloc, "\"\\u{1000000}\""),
+        Err(ParseError::InvalidEscapeSequence(..))
+    );
+
+    assert_eq!(
+        parse_without_pos(&alloc, "\"\\u{e7a8}\""),
+        mk_single_chunk(&alloc, "\u{e7a8}")
+    );
+    // codes are case insensitive
+    assert_eq!(
+        parse_without_pos(&alloc, "\"\\u{E7A8}\""),
+        mk_single_chunk(&alloc, "\u{E7A8}")
+    );
+
+    // codes can be variable length
+    assert_eq!(
+        parse_without_pos(&alloc, "\"\\u{1f606}\""),
+        mk_single_chunk(&alloc, "\u{1f606}")
+    );
+    // leading zeroes are allowed
+    assert_eq!(
+        parse_without_pos(&alloc, "\"\\u{0061}\""),
+        mk_single_chunk(&alloc, "\u{61}")
+    );
+
+    // The bottom of the unicode range should work
+    assert_eq!(
+        parse_without_pos(&alloc, "\"\\u{0}\""),
+        mk_single_chunk(&alloc, "\u{0}")
+    );
+    // The top of the unicode range should work
+    assert_eq!(
+        parse_without_pos(&alloc, "\"\\u{10FFFF}\""),
+        mk_single_chunk(&alloc, "\u{10FFFF}")
+    );
+}
+
 /// Regression test for [#230](https://github.com/tweag/nickel/issues/230).
 #[test]
 fn multiline_str_escape() {

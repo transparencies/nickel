@@ -1943,6 +1943,9 @@ impl IntoDiagnostics for ParseError {
             ParseError::InvalidAsciiEscapeCode(span) => Diagnostic::error()
                 .with_message("invalid ascii escape code")
                 .with_labels(vec![primary(&span)]),
+            ParseError::InvalidUnicodeEscapeCode(span) => Diagnostic::error()
+                .with_message("invalid unicode escape code")
+                .with_labels(vec![primary(&span)]),
             ParseError::StringDelimiterMismatch {
                 opening_delimiter,
                 closing_delimiter,
