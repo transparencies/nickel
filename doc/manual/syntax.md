@@ -1128,7 +1128,7 @@ constructors we've just listed), and types can appear anywhere.
 Nickel features the following builtin types and type constructors:
 
 - Primitive types: `Number`, `String`, `Bool`, and `Dyn` (the dynamic type, which
-represents any value)
+  represents any value)
 - Arrays: `Array <type>` is an array whose elements are of type `<type>`.
 - Dictionaries: `{_ : <type>}` is a record whose fields are of type `<type>`.
 - Enums: `[| 'tag1 <type1?>, .., 'tagn <typen?>|]` is an enumeration comprised of
