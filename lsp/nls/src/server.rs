@@ -217,6 +217,10 @@ impl Server {
                 }
                 Ok(Shutdown::Continue)
             }
+            Task::CancelRequest(id) => {
+                self.cancel_request(id);
+                Ok(Shutdown::Continue)
+            }
         }
     }
 
@@ -331,6 +335,19 @@ impl Server {
             });
         }
         Ok(())
+    }
+
+    fn cancel_request(&mut self, id: RequestId) {
+        debug!("Cancelling request {}", id);
+        self.reply(Response {
+            id,
+            result: None,
+            error: Some(ResponseError {
+                code: ErrorCode::RequestCanceled as i32,
+                message: "Request cancelled".into(),
+                data: None,
+            }),
+        });
     }
 
     pub fn issue_diagnostics(

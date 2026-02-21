@@ -136,6 +136,37 @@ fn refresh_missing_imports() {
 }
 
 #[test]
+fn cancel_request() {
+    let _ = env_logger::try_init();
+    let mut harness = TestHarness::new();
+
+    let test_uri = file_url_from_path("/test.ncl").unwrap();
+    harness.send_file(test_uri.clone(), "import \"dep.ncl\"");
+    let diags = harness.wait_for_diagnostics().diagnostics;
+    assert_eq!(2, diags.len());
+    assert!(diags[0].message.contains("import of dep.ncl failed"));
+
+    // Now provide the import.
+    let dep_uri = file_url_from_path("/dep.ncl").unwrap();
+    harness.send_file(dep_uri.clone(), "42");
+
+    // Diagnostics can arrive in any order so we need to figure out
+    // which is which.
+    let (test_diags, dep_diags) = match (
+        harness.wait_for_diagnostics(),
+        harness.wait_for_diagnostics(),
+    ) {
+        (test, dep) if test.uri == test_uri => (test, dep),
+        (dep, test) => (test, dep),
+    };
+
+    assert!(test_diags.diagnostics.is_empty());
+    assert_eq!(test_diags.uri, test_uri);
+    assert!(dep_diags.diagnostics.is_empty());
+    assert_eq!(dep_diags.uri, dep_uri);
+}
+
+#[test]
 fn apply_client_options() {
     let _ = env_logger::try_init();
     let lsp_options = json!({
