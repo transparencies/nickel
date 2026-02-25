@@ -51,6 +51,7 @@ pub enum DocumentSync {
 enum ReqOrSync {
     Request(lsp_server::Request),
     DocumentSync(DocumentSync),
+    CanceledRequest(RequestId),
 }
 
 pub struct TaskQueue {
@@ -70,7 +71,6 @@ pub struct TaskQueue {
     open_files: HashSet<Url>,
     /// The set of files that need updated diagnostics published for them.
     stale_diagnostics: HashSet<Url>,
-    cancelled_requests: HashSet<RequestId>,
 }
 
 impl TaskQueue {
@@ -79,7 +79,6 @@ impl TaskQueue {
             request_or_sync: VecDeque::new(),
             open_files: HashSet::new(),
             stale_diagnostics: HashSet::new(),
-            cancelled_requests: HashSet::new(),
         }
     }
 
@@ -132,7 +131,14 @@ impl TaskQueue {
                     NumberOrString::Number(id) => id.into(),
                     NumberOrString::String(id) => id.into(),
                 };
-                self.cancelled_requests.insert(id);
+                self.request_or_sync.iter_mut().for_each(|it| match it {
+                    ReqOrSync::Request(req) => {
+                        if req.id == id {
+                            *it = ReqOrSync::CanceledRequest(id.clone());
+                        }
+                    }
+                    _ => {}
+                });
             }
             method => debug!("No handler for notification type {}", method),
         };
@@ -206,11 +212,8 @@ impl TaskQueue {
         }
         match self.request_or_sync.pop_front() {
             Some(ReqOrSync::DocumentSync(task)) => Some(Task::HandleDocumentSync(task)),
+            Some(ReqOrSync::CanceledRequest(id)) => Some(Task::CancelRequest(id)),
             Some(ReqOrSync::Request(req)) => {
-                if self.cancelled_requests.contains(&req.id) {
-                    self.cancelled_requests.remove(&req.id);
-                    return Some(Task::CancelRequest(req.id));
-                }
                 let task = match categorize(&req) {
                     RequestCategory::EvalCommand(uri) => {
                         // The eval command publishes the new diagnostics for a file
@@ -248,15 +251,8 @@ impl TaskQueue {
     }
 
     pub fn next_task(&mut self) -> Option<Task> {
-        let task = self
-            .next_request_or_sync()
-            .or_else(|| self.next_diagnostic());
-        if task.is_none() {
-            // If there's nothing in the queue, then any requests in the cancelled requests must
-            // have already been processed. We can clean up whatever is remaining.
-            self.cancelled_requests.clear();
-        }
-        task
+        self.next_request_or_sync()
+            .or_else(|| self.next_diagnostic())
     }
 }
 
@@ -585,11 +581,19 @@ mod test {
     }
 
     #[test]
-    fn clear_cancelled_requests() {
+    fn only_request_with_matching_id_is_cancelled() {
         let mut queue = TaskQueue::new();
-        let id = 123;
-        let req = Request::new(
-            id.into(),
+        let cancelled_req = Request::new(
+            123.into(),
+            ExecuteCommand::METHOD.into(),
+            json!({
+                "command":"eval",
+                "arguments":[{"uri": "file:///test.ncl"}]
+            }),
+        );
+
+        let other_req = Request::new(
+            321.into(),
             ExecuteCommand::METHOD.into(),
             json!({
                 "command":"eval",
@@ -600,19 +604,25 @@ mod test {
         let cancel = Notification::new(
             Cancel::METHOD.into(),
             json!({
-                "id": id
+                "id": 123
             }),
         );
 
-        queue.queue_message(Message::Request(req)).unwrap();
-        // The request has already been taken out of the queue before the cancel notification
-        // arrives.
-        let task = queue.next_task().unwrap();
-        assert_matches!(task, Task::HandleRequest(_));
-
+        queue
+            .queue_message(Message::Request(cancelled_req))
+            .unwrap();
+        queue.queue_message(Message::Request(other_req)).unwrap();
         queue.queue_message(Message::Notification(cancel)).unwrap();
-        assert!(queue.next_task().is_none());
+        match queue.next_task().unwrap() {
+            Task::CancelRequest(id) => assert_eq!(id, 123.into()),
+            _ => panic!("Wrong task type"),
+        }
+        match queue.next_task().unwrap() {
+            Task::HandleRequest(req) => assert_eq!(req.id, 321.into()),
+            _ => panic!("Wrong task type"),
+        }
 
-        assert_eq!(0, queue.cancelled_requests.len());
+        // The request should actually be cancelled now.
+        assert!(queue.next_task().is_none());
     }
 }
