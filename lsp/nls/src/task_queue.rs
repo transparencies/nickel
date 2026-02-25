@@ -131,13 +131,12 @@ impl TaskQueue {
                     NumberOrString::Number(id) => id.into(),
                     NumberOrString::String(id) => id.into(),
                 };
-                self.request_or_sync.iter_mut().for_each(|it| match it {
-                    ReqOrSync::Request(req) => {
-                        if req.id == id {
-                            *it = ReqOrSync::CanceledRequest(id.clone());
-                        }
+                self.request_or_sync.iter_mut().for_each(|it| {
+                    if let ReqOrSync::Request(req) = it
+                        && req.id == id
+                    {
+                        *it = ReqOrSync::CanceledRequest(id.clone());
                     }
-                    _ => {}
                 });
             }
             method => debug!("No handler for notification type {}", method),
