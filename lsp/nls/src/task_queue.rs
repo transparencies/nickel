@@ -5,11 +5,13 @@ use std::{
 
 use anyhow::Result;
 use log::debug;
-use lsp_server::{Message, Notification};
+use lsp_server::{Message, Notification, RequestId};
 use lsp_types::{
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Url,
+    CancelParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, NumberOrString, Url,
     notification::{
-        DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _,
+        Cancel, DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument,
+        Notification as NotificationTrait,
     },
     request::{ExecuteCommand, Request as RequestTrait},
 };
@@ -22,6 +24,8 @@ pub enum Task {
     HandleDocumentSync(DocumentSync),
     /// Publish diagnostics for a file
     Diagnostics(DiagnosticsRequest),
+    /// Cancel a request.
+    CancelRequest(RequestId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +51,7 @@ pub enum DocumentSync {
 enum ReqOrSync {
     Request(lsp_server::Request),
     DocumentSync(DocumentSync),
+    CanceledRequest(RequestId),
 }
 
 pub struct TaskQueue {
@@ -120,6 +125,20 @@ impl TaskQueue {
                     serde_json::from_value::<DidChangeTextDocumentParams>(notification.params)?;
                 self.add_sync_task(DocumentSync::Change(params));
             }
+            Cancel::METHOD => {
+                let params = serde_json::from_value::<CancelParams>(notification.params)?;
+                let id = match params.id {
+                    NumberOrString::Number(id) => id.into(),
+                    NumberOrString::String(id) => id.into(),
+                };
+                self.request_or_sync.iter_mut().for_each(|it| {
+                    if let ReqOrSync::Request(req) = it
+                        && req.id == id
+                    {
+                        *it = ReqOrSync::CanceledRequest(id.clone());
+                    }
+                });
+            }
             method => debug!("No handler for notification type {}", method),
         };
         Ok(())
@@ -192,6 +211,7 @@ impl TaskQueue {
         }
         match self.request_or_sync.pop_front() {
             Some(ReqOrSync::DocumentSync(task)) => Some(Task::HandleDocumentSync(task)),
+            Some(ReqOrSync::CanceledRequest(id)) => Some(Task::CancelRequest(id)),
             Some(ReqOrSync::Request(req)) => {
                 let task = match categorize(&req) {
                     RequestCategory::EvalCommand(uri) => {
@@ -497,5 +517,111 @@ mod test {
         queue.add_diagnostics_task("file:///test.ncl".parse().unwrap());
         assert_matches!(queue.next_task().unwrap(), Task::Diagnostics(_));
         assert_matches!(queue.next_task().unwrap(), Task::HandleRequest(_));
+    }
+
+    #[test]
+    fn cancel_request_int_id() {
+        let mut queue = TaskQueue::new();
+        let req = Request::new(
+            123.into(),
+            ExecuteCommand::METHOD.into(),
+            json!({
+                "command":"eval",
+                "arguments":[{"uri": "file:///test.ncl"}]
+            }),
+        );
+
+        let cancel = Notification::new(
+            Cancel::METHOD.into(),
+            json!({
+                "id": 123
+            }),
+        );
+
+        queue.queue_message(Message::Request(req)).unwrap();
+        queue.queue_message(Message::Notification(cancel)).unwrap();
+        let task = queue.next_task().unwrap();
+        match task {
+            Task::CancelRequest(id) => assert_eq!(id, 123.into()),
+            _ => panic!("Wrong task type"),
+        }
+        // The request should actually be cancelled now.
+        assert!(queue.next_task().is_none());
+    }
+
+    #[test]
+    fn cancel_request_str_id() {
+        let mut queue = TaskQueue::new();
+        let req = Request::new(
+            "123".to_string().into(),
+            ExecuteCommand::METHOD.into(),
+            json!({
+                "command":"eval",
+                "arguments":[{"uri": "file:///test.ncl"}]
+            }),
+        );
+
+        let cancel = Notification::new(
+            Cancel::METHOD.into(),
+            json!({
+                "id": "123"
+            }),
+        );
+
+        queue.queue_message(Message::Request(req)).unwrap();
+        queue.queue_message(Message::Notification(cancel)).unwrap();
+        let task = queue.next_task().unwrap();
+        match task {
+            Task::CancelRequest(id) => assert_eq!(id, "123".to_string().into()),
+            _ => panic!("Wrong task type"),
+        }
+        // The request should actually be cancelled now.
+        assert!(queue.next_task().is_none());
+    }
+
+    #[test]
+    fn only_request_with_matching_id_is_cancelled() {
+        let mut queue = TaskQueue::new();
+        let cancelled_req = Request::new(
+            123.into(),
+            ExecuteCommand::METHOD.into(),
+            json!({
+                "command":"eval",
+                "arguments":[{"uri": "file:///test.ncl"}]
+            }),
+        );
+
+        let other_req = Request::new(
+            321.into(),
+            ExecuteCommand::METHOD.into(),
+            json!({
+                "command":"eval",
+                "arguments":[{"uri": "file:///test.ncl"}]
+            }),
+        );
+
+        let cancel = Notification::new(
+            Cancel::METHOD.into(),
+            json!({
+                "id": 123
+            }),
+        );
+
+        queue
+            .queue_message(Message::Request(cancelled_req))
+            .unwrap();
+        queue.queue_message(Message::Request(other_req)).unwrap();
+        queue.queue_message(Message::Notification(cancel)).unwrap();
+        match queue.next_task().unwrap() {
+            Task::CancelRequest(id) => assert_eq!(id, 123.into()),
+            _ => panic!("Wrong task type"),
+        }
+        match queue.next_task().unwrap() {
+            Task::HandleRequest(req) => assert_eq!(req.id, 321.into()),
+            _ => panic!("Wrong task type"),
+        }
+
+        // The request should actually be cancelled now.
+        assert!(queue.next_task().is_none());
     }
 }

@@ -98,7 +98,7 @@ fn run() -> Result<()> {
         )))?;
     }
 
-    let (connection, _threads) = Connection::stdio();
+    let connection = buffered_lsp_connection();
 
     let capabilities = Server::capabilities();
 
@@ -115,4 +115,38 @@ fn run() -> Result<()> {
     let _server = Server::new(connection, config).run();
 
     Ok(())
+}
+
+/// Creates an LSP connection reading from stdio with an additional message buffer.
+fn buffered_lsp_connection() -> Connection {
+    // We add an additional buffer for the LSP connection to avoid a race condition that made
+    // request cancellation ineffective.
+    //
+    // The lsp server connection this receives on is a zero size bounded channel. This
+    // causes an issue where once we pull something from the channel, the lsp server thread
+    // must fetch the next message from stdin, leaving this channel empty for a short time
+    // even if there are multiple messages already sent to the server. When it's queueing
+    // tasks this loop will usually beat the thread reading from stdin and will find the
+    // channel empty. This can cause the main loop to begin handling a request even if
+    // there's already a notification in stdin cancelling it.
+    //
+    // The buffer lets multiple messages stack up so there's not a problem with empty reads from
+    // the channel.
+
+    let (buf_sender, buf_receiver) = crossbeam::channel::bounded(30);
+
+    let (Connection { sender, receiver }, _threads) = Connection::stdio();
+    std::thread::Builder::new()
+        .name("LspMessageBuffer".into())
+        .spawn(move || {
+            receiver
+                .into_iter()
+                .try_for_each(|msg| buf_sender.send(msg))
+        })
+        .unwrap();
+
+    Connection {
+        sender,
+        receiver: buf_receiver,
+    }
 }

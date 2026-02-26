@@ -161,6 +161,7 @@ impl Server {
                         let Ok(msg) = msg else {
                             break;
                         };
+
                         let result = self.task_queue.queue_message(msg);
                         if let Err(err) = result {
                             warn!("Failed to add a message to the queue: {}", err);
@@ -215,6 +216,10 @@ impl Server {
                 if let Err(err) = crate::files::run_diagnostics_on_file(self, req) {
                     warn!("Unable to publish diagnostics for a file: {}", err);
                 }
+                Ok(Shutdown::Continue)
+            }
+            Task::CancelRequest(id) => {
+                self.cancel_request(id);
                 Ok(Shutdown::Continue)
             }
         }
@@ -331,6 +336,26 @@ impl Server {
             });
         }
         Ok(())
+    }
+
+    /// Sends a response to the client acknowledging that a request has been cancelled.
+    ///
+    /// It's assumed that the cancellation was requested by the client and not initiated by the
+    /// server, and the response is sent accordingly.
+    fn cancel_request(&mut self, id: RequestId) {
+        debug!("Cancelling request {}", id);
+        self.reply(Response {
+            id,
+            result: None,
+            error: Some(ResponseError {
+                // If we need to support server cancelled requests at some point this error code is
+                // the only thing that really needs to change. `ErrorCode::ServerCanceled` would be
+                // used instead.
+                code: ErrorCode::RequestCanceled as i32,
+                message: "Request cancelled".into(),
+                data: None,
+            }),
+        });
     }
 
     pub fn issue_diagnostics(
