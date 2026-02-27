@@ -1,3 +1,33 @@
+Version 1.16 (2026-02-26)
+=========================
+
+In Nickel 1.16, unicode characters can be escaped in strings using the
+`\u{1f923}` syntax. It also fixes a few bugs in the interpreter and the language
+server, and has some performance improvements in the language server.
+
+Core language
+-------------
+
+* Allow unicode escape sequences in string literals by @L0r3m1p5um in https://github.com/nickel-lang/nickel/pull/2520
+
+Tooling
+-------
+
+* Fix panic when deserializing a too-large yaml number by @jneem in https://github.com/nickel-lang/nickel/pull/2485
+* Fix panic from unclosurized CLI overrides by @jneem in https://github.com/nickel-lang/nickel/pull/2498
+* Format nickel converted from other formats by @L0r3m1p5um in https://github.com/nickel-lang/nickel/pull/2502
+* Better localization of `std.fail_with` errors by @yannham in https://github.com/nickel-lang/nickel/pull/2505
+* Add a welcome message to the repl by @jneem in https://github.com/nickel-lang/nickel/pull/2509
+* Export NickelException in py-nickel. by @jneem in https://github.com/nickel-lang/nickel/pull/2517
+
+LSP
+---
+
+* Allow priority to be set for background evaluation in the LSP by @L0r3m1p5um in https://github.com/nickel-lang/nickel/pull/2493
+* Performance improvements for language server by @L0r3m1p5um in https://github.com/nickel-lang/nickel/pull/2510
+* Request cancellation for language server by @L0r3m1p5um in https://github.com/nickel-lang/nickel/pull/2523
+* Fix a missing closurization that was hiding some errors by @jneem in https://github.com/nickel-lang/nickel/pull/2486
+
 Version 1.15 (2025-12-10)
 =========================
 
