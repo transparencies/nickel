@@ -86,8 +86,8 @@ jobs:
           TARBALL_TAG: ${{ steps.build-image.outputs.imageName }}:${{ steps.build-image.outputs.imageTag }}
         run: |
           docker load -i nickel-${{ matrix.os.architecture }}-docker-image.tar.gz
-          docker tag "$TARBALL_TAG" ghcr.io/tweag/nickel:$RELEASE_TAG-${{ matrix.os.architecture}}
-          docker push ghcr.io/tweag/nickel:$RELEASE_TAG-${{ matrix.os.architecture}}
+          docker tag "$TARBALL_TAG" ghcr.io/nickel-lang/nickel:$RELEASE_TAG-${{ matrix.os.architecture}}
+          docker push ghcr.io/nickel-lang/nickel:$RELEASE_TAG-${{ matrix.os.architecture}}
 
   docker-multiplatform-image:
     name: "Assemble multi-platform Docker image"
@@ -100,8 +100,8 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.release_tag }}
         run: |
-          docker buildx imagetools create -t ghcr.io/tweag/nickel:$RELEASE_TAG ghcr.io/tweag/nickel:$RELEASE_TAG-x86_64 ghcr.io/tweag/nickel:$RELEASE_TAG-arm64
-          docker buildx imagetools inspect ghcr.io/tweag/nickel:$RELEASE_TAG
+          docker buildx imagetools create -t ghcr.io/nickel-lang/nickel:$RELEASE_TAG ghcr.io/nickel-lang/nickel:$RELEASE_TAG-x86_64 ghcr.io/nickel-lang/nickel:$RELEASE_TAG-arm64
+          docker buildx imagetools inspect ghcr.io/nickel-lang/nickel:$RELEASE_TAG
 
   release-artifacts-macos:
     name: "Build MacOS Nickel binaries"
