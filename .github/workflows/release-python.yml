@@ -50,7 +50,7 @@ jobs:
           sccache: 'true'
           manylinux: auto
       - name: Upload wheels
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-linux-${{ matrix.platform.target }}
           path: dist/*
@@ -77,7 +77,7 @@ jobs:
           sccache: 'true'
           manylinux: musllinux_1_2
       - name: Upload wheels
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-musllinux-${{ matrix.platform.target }}
           path: dist/*
@@ -104,7 +104,7 @@ jobs:
           args: --release --out dist --interpreter python3.11 python3.12 python3.13 --manifest-path py-nickel/Cargo.toml
           sccache: 'true'
       - name: Upload wheels
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-windows-${{ matrix.platform.target }}
           path: dist/*
@@ -132,7 +132,7 @@ jobs:
           args: --release --out dist --interpreter python3.11 python3.12 python3.13 --manifest-path py-nickel/Cargo.toml
           sccache: 'true'
       - name: Upload wheels
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-macos-${{ matrix.platform.target }}
           path: dist/*
@@ -149,7 +149,7 @@ jobs:
           command: sdist
           args: --out dist --manifest-path py-nickel/Cargo.toml
       - name: Upload sdist
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-sdist
           path: dist/*
