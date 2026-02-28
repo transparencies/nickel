@@ -30,6 +30,11 @@ pub struct ConvertCommand {
     /// Output file. Standard output by default
     #[arg(short, long)]
     pub output: Option<PathBuf>,
+
+    /// Skip formatting the output. Useful for batch conversions or when
+    /// formatted output isn't needed.
+    #[arg(long = "no-formatting")]
+    pub no_formatting: bool,
 }
 
 impl ConvertCommand {
@@ -114,14 +119,18 @@ impl ConvertCommand {
         let ast = ast.map_err(|error| Error::Program { files, error })?;
 
         let nickel_string = {
-            let mut output = Vec::new();
             let unformatted = ast.to_string();
-            // In principle formatting should be infallible here, but if it fails somehow the
-            // unformatted string will be returned.
-            if nickel_lang_core::format::format(unformatted.as_bytes(), &mut output).is_ok() {
-                String::from_utf8(output).unwrap_or(unformatted)
-            } else {
+            if self.no_formatting {
                 unformatted
+            } else {
+                let mut output = Vec::new();
+                // In principle formatting should be infallible here, but if it fails somehow the
+                // unformatted string will be returned.
+                if nickel_lang_core::format::format(unformatted.as_bytes(), &mut output).is_ok() {
+                    String::from_utf8(output).unwrap_or(unformatted)
+                } else {
+                    unformatted
+                }
             }
         };
         self.write(&nickel_string)?;

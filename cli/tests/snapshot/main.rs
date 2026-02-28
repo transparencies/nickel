@@ -104,6 +104,18 @@ fn check_conversion_snapshots(path: &str) {
     assert_snapshot_filtered!(file.prefixed_test_name("convert_stderr"), err);
 }
 
+#[test_resources("cli/tests/snapshot/inputs/**/convert/*")]
+fn check_conversion_no_format_snapshots(path: &str) {
+    let file = TestFile::from_project_path(path);
+    let invocation = NickelInvocation::new()
+        .file(&file)
+        .args(["convert", "--no-formatting"]);
+
+    let (out, err) = invocation.snapshot();
+    assert_snapshot_filtered!(file.prefixed_test_name("convert_no_format_stdout"), out);
+    assert_snapshot_filtered!(file.prefixed_test_name("convert_no_format_stderr"), err);
+}
+
 struct TestFile {
     path_buf: PathBuf,
 }
