@@ -14,8 +14,8 @@ in
 {
   physical = {
     phase_at_STP = "solid",
-    melting_point = "1728 K (%{melting_celcius} °C, %{melting_fahrenheit} °F)",
-    boiling_point = "3003 K (%{boiling_celcius} °C, %{boiling_fahrenheit} °F)",
+    melting_point = "1728 K (%{melting_celsius} °C, %{melting_fahrenheit} °F)",
+    boiling_point = "3003 K (%{boiling_celsius} °C, %{boiling_fahrenheit} °F)",
     density = "8.908 g/cm3",
     when_liquid = "7.81 g/cm3",
     heat_of_fusion = "17.48 kJ/mol",

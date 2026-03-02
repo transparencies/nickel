@@ -541,7 +541,7 @@ pub fn strip_indent(chunks: &mut [StringChunk<Ast<'_>>]) {
     // "%
     // ```
     //
-    // We don't know at the time we process the expression `${x}` if it wil have to be re-indented,
+    // We don't know at the time we process the expression `${x}` if it will have to be re-indented,
     // as it depends on the rest of the line being only whitespace or not, according to the
     // indentation rule. Here, the first occurrence should not, while the second one should. We can
     // only know this once we process the next chunks, here when arriving at `${y}`. To handle
