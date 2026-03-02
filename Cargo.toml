@@ -167,3 +167,4 @@ extend-ignore-words-re = [
 clos = "clos"
 # field shorthand
 fiel = "fiel"
+Shepard = "Shepard"
