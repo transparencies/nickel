@@ -1,0 +1,115 @@
+---
+source: cli/tests/snapshot/main.rs
+expression: err
+---
+warning: plain functions as contracts are deprecated
+   ┌─ [INPUTS_PATH]/warnings/suppressed.ncl:15:3
+   │
+ 3 │ let C = fun label value => value in
+   │         ------------------------ this function
+   ·
+15 │   11 | C,
+   │   ^^ applied to this term
+   │
+   = wrap this function using one of the constructors in `std.contract` instead, like `std.contract.from_validator` or `std.contract.custom`
+
+warning: plain functions as contracts are deprecated
+   ┌─ [INPUTS_PATH]/warnings/suppressed.ncl:14:3
+   │
+ 3 │ let C = fun label value => value in
+   │         ------------------------ this function
+   ·
+14 │   10 | C,
+   │   ^^ applied to this term
+   │
+   = wrap this function using one of the constructors in `std.contract` instead, like `std.contract.from_validator` or `std.contract.custom`
+
+warning: plain functions as contracts are deprecated
+   ┌─ [INPUTS_PATH]/warnings/suppressed.ncl:13:3
+   │
+ 3 │ let C = fun label value => value in
+   │         ------------------------ this function
+   ·
+13 │   9 | C,
+   │   ^ applied to this term
+   │
+   = wrap this function using one of the constructors in `std.contract` instead, like `std.contract.from_validator` or `std.contract.custom`
+
+warning: plain functions as contracts are deprecated
+   ┌─ [INPUTS_PATH]/warnings/suppressed.ncl:12:3
+   │
+ 3 │ let C = fun label value => value in
+   │         ------------------------ this function
+   ·
+12 │   8 | C,
+   │   ^ applied to this term
+   │
+   = wrap this function using one of the constructors in `std.contract` instead, like `std.contract.from_validator` or `std.contract.custom`
+
+warning: plain functions as contracts are deprecated
+   ┌─ [INPUTS_PATH]/warnings/suppressed.ncl:11:3
+   │
+ 3 │ let C = fun label value => value in
+   │         ------------------------ this function
+   ·
+11 │   7 | C,
+   │   ^ applied to this term
+   │
+   = wrap this function using one of the constructors in `std.contract` instead, like `std.contract.from_validator` or `std.contract.custom`
+
+warning: plain functions as contracts are deprecated
+   ┌─ [INPUTS_PATH]/warnings/suppressed.ncl:10:3
+   │
+ 3 │ let C = fun label value => value in
+   │         ------------------------ this function
+   ·
+10 │   6 | C,
+   │   ^ applied to this term
+   │
+   = wrap this function using one of the constructors in `std.contract` instead, like `std.contract.from_validator` or `std.contract.custom`
+
+warning: plain functions as contracts are deprecated
+  ┌─ [INPUTS_PATH]/warnings/suppressed.ncl:9:3
+  │
+3 │ let C = fun label value => value in
+  │         ------------------------ this function
+  ·
+9 │   5 | C,
+  │   ^ applied to this term
+  │
+  = wrap this function using one of the constructors in `std.contract` instead, like `std.contract.from_validator` or `std.contract.custom`
+
+warning: plain functions as contracts are deprecated
+  ┌─ [INPUTS_PATH]/warnings/suppressed.ncl:8:3
+  │
+3 │ let C = fun label value => value in
+  │         ------------------------ this function
+  ·
+8 │   4 | C,
+  │   ^ applied to this term
+  │
+  = wrap this function using one of the constructors in `std.contract` instead, like `std.contract.from_validator` or `std.contract.custom`
+
+warning: plain functions as contracts are deprecated
+  ┌─ [INPUTS_PATH]/warnings/suppressed.ncl:7:3
+  │
+3 │ let C = fun label value => value in
+  │         ------------------------ this function
+  ·
+7 │   3 | C,
+  │   ^ applied to this term
+  │
+  = wrap this function using one of the constructors in `std.contract` instead, like `std.contract.from_validator` or `std.contract.custom`
+
+warning: plain functions as contracts are deprecated
+  ┌─ [INPUTS_PATH]/warnings/suppressed.ncl:6:3
+  │
+3 │ let C = fun label value => value in
+  │         ------------------------ this function
+  ·
+6 │   2 | C,
+  │   ^ applied to this term
+  │
+  = wrap this function using one of the constructors in `std.contract` instead, like `std.contract.from_validator` or `std.contract.custom`
+
+(suppressed 1 additional warnings)
