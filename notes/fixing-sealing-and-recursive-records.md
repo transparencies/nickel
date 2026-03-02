@@ -66,7 +66,7 @@ record fields and recursive references.
 We're keeping this draft note around to keep a record of our work debugging
 the issue.
 
-## Playgroud
+## Playground
 
 ```
 { foo = 1, bar = foo + 1} |> record.map (fun _key => (+) 1)

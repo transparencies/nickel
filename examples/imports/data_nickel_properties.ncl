@@ -1,13 +1,13 @@
 # test = 'pass'
 let
-  kelvin_to_celcius = fun kelvin => kelvin - 273.15,
+  kelvin_to_celsius = fun kelvin => kelvin - 273.15,
   kelvin_to_fahrenheit = fun kelvin => (kelvin - 273.15) * 1.8000 + 32.00,
 in
 
 let
-  melting_celcius = kelvin_to_celcius 1728,
+  melting_celsius = kelvin_to_celsius 1728,
   melting_fahrenheit = kelvin_to_fahrenheit 1728,
-  boiling_celcius = kelvin_to_celcius 3003,
+  boiling_celsius = kelvin_to_celsius 3003,
   boiling_fahrenheit = kelvin_to_fahrenheit 3003,
 in
 
