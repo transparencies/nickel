@@ -240,7 +240,7 @@ pub enum Term {
     /// This program is valid, but when evaluating `r` in `r.baz`, `bar` doesn't have a definition
     /// yet. This is fine because we don't evaluate `bar` nor `foo`. Still, we have to put
     /// something in the recursive environment. And if we wrote `r.foo` instead, we should raise a
-    /// missing field definition error. Thus, we need to bind `bar` to a term wich, if ever
+    /// missing field definition error. Thus, we need to bind `bar` to a term which, if ever
     /// evaluated, will raise a proper missing field definition error. This is precisely the
     /// behavior of `RuntimeError`.
     RuntimeError(Box<EvalErrorKind>),

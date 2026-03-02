@@ -115,7 +115,7 @@ struct OpNEvalData {
     pos_op: PosIdx,
 }
 
-/// A string represention of the type of the first argument of serialization-related primitive
+/// A string representation of the type of the first argument of serialization-related primitive
 /// operations. This is a Nickel enum of the supported serialization formats.
 static ENUM_FORMAT: &str = "[| 'Json, 'Toml, 'Yaml, 'YamlDocuments |]";
 
