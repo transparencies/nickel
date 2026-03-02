@@ -835,7 +835,7 @@ environment to the stack and continuing with the original code for `(+)`.
     Should we have, as in JavaScript, a inline representation for small maps?
 - Array repr: todo. RPDS?
 - Stack elements repr (equality, deep_sequing, argument tracking and other
-    specifities of Nickel).
+    specificities of Nickel).
 - Number of stacks? Registers? Probably one stack. Should we have a bunch of
     registers as in Lua?
 - Instruction set: the Tvix one looks like the more adapted to our case.
