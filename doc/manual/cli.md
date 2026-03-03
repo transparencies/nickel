@@ -399,6 +399,10 @@ Text files will be converted to Nickel strings: if `data.txt` contains the
 string `Hello, "world"` then `nickel convert data.txt` will output
 `"Hello, \"world\""`.
 
+By default, the converted output is auto-formatted. Pass `--no-formatting` to
+skip the formatting step, which can be useful for batch conversions or when
+formatted output isn't needed.
+
 The input type will be auto-detected based on the file extension. If you want to
 force the input type, supply the input on stdin and use the `--stdin-format` flag,
 like `cat data | nickel convert --stdin-format json`.
