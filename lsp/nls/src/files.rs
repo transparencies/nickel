@@ -62,6 +62,14 @@ pub fn handle_close(
     let (new_file_id, invalid) = server.world.close_file(uri.clone())?;
     info!("Closed file {uri}");
 
+    // If there's no new file ID, the file was deleted. If that's the case then
+    // we want to clear out any existing diagnostics on that file, since clients may
+    // still consider the deleted file to have an error for some purposes, like for
+    // showing directories where an error exists.
+    if new_file_id.is_none() {
+        server.publish_diagnostics(uri, Vec::new());
+    }
+
     Trace::reply(id);
     Ok((new_file_id, server.world.uris(invalid).cloned().collect()))
 }
