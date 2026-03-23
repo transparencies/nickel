@@ -543,8 +543,7 @@ where
         MetadataExportFormat::Json => serde_json::to_writer_pretty(writer, &item)
             .map_err(|err| ExportErrorKind::Other(err.to_string())),
         MetadataExportFormat::Yaml => {
-            writeln!(writer, "---")
-                .map_err(|err| ExportErrorKind::Other(err.to_string()))?;
+            writeln!(writer, "---").map_err(|err| ExportErrorKind::Other(err.to_string()))?;
             serde_yaml::to_writer(writer, &item)
                 .map_err(|err| ExportErrorKind::Other(err.to_string()))
         }
@@ -575,8 +574,7 @@ where
         ExportFormat::Json => serde_json::to_writer_pretty(writer, &value)
             .map_err(|err| ExportErrorKind::Other(err.to_string())),
         ExportFormat::Yaml => {
-            writeln!(writer, "---")
-                .map_err(|err| ExportErrorKind::Other(err.to_string()))?;
+            writeln!(writer, "---").map_err(|err| ExportErrorKind::Other(err.to_string()))?;
             serde_yaml::to_writer(writer, &value)
                 .map_err(|err| ExportErrorKind::Other(err.to_string()))
         }
