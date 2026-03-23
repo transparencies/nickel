@@ -1,0 +1,11 @@
+---
+source: cli/tests/snapshot/main.rs
+assertion_line: 78
+expression: out
+---
+---
+doc: A friendly greeting
+optional: false
+not_exported: false
+priority: '0'
+value: '"hello"'

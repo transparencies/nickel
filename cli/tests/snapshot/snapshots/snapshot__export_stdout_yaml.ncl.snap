@@ -1,0 +1,10 @@
+---
+source: cli/tests/snapshot/main.rs
+assertion_line: 78
+expression: out
+---
+---
+a_record:
+  even:
+    more:
+      nested: record

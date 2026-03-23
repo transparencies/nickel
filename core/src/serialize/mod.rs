@@ -542,8 +542,12 @@ where
         MetadataExportFormat::Markdown => unimplemented!(),
         MetadataExportFormat::Json => serde_json::to_writer_pretty(writer, &item)
             .map_err(|err| ExportErrorKind::Other(err.to_string())),
-        MetadataExportFormat::Yaml => serde_yaml::to_writer(writer, &item)
-            .map_err(|err| ExportErrorKind::Other(err.to_string())),
+        MetadataExportFormat::Yaml => {
+            writeln!(writer, "---")
+                .map_err(|err| ExportErrorKind::Other(err.to_string()))?;
+            serde_yaml::to_writer(writer, &item)
+                .map_err(|err| ExportErrorKind::Other(err.to_string()))
+        }
         MetadataExportFormat::Toml => toml::to_string_pretty(item)
             .map_err(|err| ExportErrorKind::Other(err.to_string()))
             .and_then(|s| {
@@ -570,8 +574,12 @@ where
     match format {
         ExportFormat::Json => serde_json::to_writer_pretty(writer, &value)
             .map_err(|err| ExportErrorKind::Other(err.to_string())),
-        ExportFormat::Yaml => serde_yaml::to_writer(writer, &value)
-            .map_err(|err| ExportErrorKind::Other(err.to_string())),
+        ExportFormat::Yaml => {
+            writeln!(writer, "---")
+                .map_err(|err| ExportErrorKind::Other(err.to_string()))?;
+            serde_yaml::to_writer(writer, &value)
+                .map_err(|err| ExportErrorKind::Other(err.to_string()))
+        }
         ExportFormat::YamlDocuments => {
             if let Some(arr) = value.as_array() {
                 for value in arr.iter() {
