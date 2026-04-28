@@ -567,6 +567,15 @@ impl Record<'_> {
     }
 
     /// If this field name is present in the record, return the field value.
+    ///
+    /// If this record was obtained through shallow evaluation, the returned
+    /// expression might be unevaluated. Even if the array did not contain
+    /// complex nested sub-expressions, the returned expression might be
+    /// unevaluated because of deferred contracts. For example, if you start
+    /// with the expression `{ foo : 1 } | { foo | Number }`, evaluate it shallowly
+    /// and then call `value_by_name("foo")`, you'll get back an expression
+    /// representing `1 | Number` and you'll need to evaluate further to
+    /// extract the value `1`.
     pub fn value_by_name(&self, key: &str) -> Option<Expr> {
         self.data
             .get(Ident::new(key).into())
@@ -579,6 +588,15 @@ impl Record<'_> {
     /// If this record was deeply evaluated, every defined field will have a value
     /// (i.e. the `Option<Expr>` returned here will never be `None`). However,
     /// shallowly evaluated records may have fields with no value.
+    ///
+    /// If this record was obtained through shallow evaluation, the returned
+    /// expression might be unevaluated. Even if the array did not contain
+    /// complex nested sub-expressions, the returned expression might be
+    /// unevaluated because of deferred contracts. For example, if you start
+    /// with the expression `{ foo : 1 } | { foo | Number }`, evaluate it shallowly
+    /// and then call `key_value_by_index(0)`, you'll get back an expression
+    /// representing `1 | Number` and you'll need to evaluate further to
+    /// extract the value `1`.
     pub fn key_value_by_index(&self, idx: usize) -> Option<(&str, Option<Expr>)> {
         self.data.into_opt().and_then(|data| {
             data.fields.get_index(idx).map(|(key, fld)| {
@@ -639,6 +657,15 @@ impl<'a> Array<'a> {
     }
 
     /// Returns the element at the requested index, if the index is in-bounds.
+    ///
+    /// If this array was obtained through shallow evaluation, the returned
+    /// expression might be unevaluated. Even if the array did not contain
+    /// complex nested sub-expressions, the returned expression might be
+    /// unevaluated because of deferred contracts. For example, if you start
+    /// with the expression `[1, 2, 3] | Array Number`, evaluate it shallowly
+    /// and then `get` the element at index zero, you'll get back an expression
+    /// representing `1 | Number` and you'll need to evaluate further to
+    /// extract the value `1`.
     pub fn get(&self, idx: usize) -> Option<Expr> {
         let arr = self.array();
         arr.get(idx).map(|value| Expr {
@@ -663,7 +690,7 @@ impl<'a> IntoIterator for Array<'a> {
     fn into_iter(self) -> Self::IntoIter {
         let arr = self.array();
         let pending_contracts = match arr {
-            Container::Empty => &[][..],
+            Container::Empty => [].as_slice(),
             Container::Alloc(arr) => &arr.pending_contracts,
         };
         ArrayIter {

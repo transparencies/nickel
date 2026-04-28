@@ -1787,8 +1787,8 @@ impl ArrayData {
         &self,
         pos: PosIdx,
     ) -> impl Iterator<Item = NickelValue> + use<'_> {
-        self.array.iter().cloned().map(move |v| {
-            RuntimeContract::apply_all(v, self.pending_contracts.iter().cloned(), pos)
+        self.array.iter().map(move |v| {
+            RuntimeContract::apply_all(v.clone(), self.pending_contracts.iter().cloned(), pos)
         })
     }
 }
