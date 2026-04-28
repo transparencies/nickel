@@ -70,20 +70,25 @@
         let
           wasmBindgenCargoVersions = builtins.map ({ version, ... }: version) (builtins.filter ({ name, ... }: name == "wasm-bindgen") cargoLock.package);
           wasmBindgenVersion = assert builtins.length wasmBindgenCargoVersions == 1; builtins.elemAt wasmBindgenCargoVersions 0;
+          expectedWasmBindgenVersion = "0.2.100";
         in
-        pkgs.buildWasmBindgenCli rec {
-          src = pkgs.fetchCrate {
-            pname = "wasm-bindgen-cli";
-            version = wasmBindgenVersion;
-            hash = "sha256-3RJzK7mkYFrs7C/WkhW9Rr4LdP5ofb2FdYGz1P7Uxog=";
-          };
+        if wasmBindgenVersion != expectedWasmBindgenVersion
+        then
+          abort "The wasm-bindgen version in Cargo.lock isn't ${expectedWasmBindgenVersion}. You'll need to update the hashes in flake.nix"
+        else
+          pkgs.buildWasmBindgenCli rec {
+            src = pkgs.fetchCrate {
+              pname = "wasm-bindgen-cli";
+              version = wasmBindgenVersion;
+              hash = "sha256-3RJzK7mkYFrs7C/WkhW9Rr4LdP5ofb2FdYGz1P7Uxog=";
+            };
 
-          cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
-            inherit src;
-            inherit (src) pname version;
-            hash = "sha256-qsO12332HSjWCVKtf1cUePWWb9IdYUmT+8OPj/XP2WE=";
+            cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+              inherit src;
+              inherit (src) pname version;
+              hash = "sha256-qsO12332HSjWCVKtf1cUePWWb9IdYUmT+8OPj/XP2WE=";
+            };
           };
-        };
 
       # Additional packages required to build Nickel on Darwin
       systemSpecificPkgs =
