@@ -745,10 +745,20 @@ impl<'std> PackedAnalysis<'std> {
 
             (
                 new_imports,
-                typecheck_result.map(|type_tables| {
-                    let type_lookups = collector.complete(alloc, type_tables);
-                    *slf.analysis = Analysis::new(alloc, slf.ast, type_lookups, slf.init_term_env);
-                }),
+                typecheck_result
+                    .map(|type_tables| {
+                        let type_lookups = collector.complete(alloc, type_tables);
+                        *slf.analysis =
+                            Analysis::new(alloc, slf.ast, type_lookups, slf.init_term_env);
+                    })
+                    .inspect_err(|_| {
+                        *slf.analysis = Analysis::new(
+                            alloc,
+                            slf.ast,
+                            CollectedTypes::default(),
+                            slf.init_term_env,
+                        );
+                    }),
             )
         })
     }
