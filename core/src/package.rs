@@ -98,10 +98,12 @@ impl std::fmt::Display for PackageMap {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
-
     use super::*;
-    use crate::{error::NullReporter, eval::cache::CacheImpl, program::Program, term::Number};
+    use crate::{
+        eval::cache::CacheImpl,
+        program::{Program, ProgramBuilder},
+        term::Number,
+    };
     use nickel_lang_utils::project_root::project_root;
 
     // Test basic package map functionality by building one manually out of
@@ -117,14 +119,11 @@ mod tests {
             packages: std::iter::once(((pkg1, Ident::new("dep")), pkg2)).collect(),
         };
 
-        let mut p: Program<CacheImpl> = Program::new_from_source(
-            Cursor::new("import pkg"),
-            "<test>",
-            std::io::sink(),
-            NullReporter {},
-        )
-        .unwrap();
-        p.set_package_map(map);
+        let mut p: Program<CacheImpl> = ProgramBuilder::new()
+            .add_source_string("import pkg".to_owned(), "<test>")
+            .with_package_map(map)
+            .build()
+            .unwrap();
 
         assert_eq!(
             p.eval_full().unwrap().as_number().unwrap(),

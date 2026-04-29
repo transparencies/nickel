@@ -1,11 +1,12 @@
-use std::{io::Cursor, thread};
+use std::thread;
 
 use nickel_lang_core::{
     error::{
-        Error, EvalErrorKind, ExportErrorKind, ImportErrorKind, NullReporter, ParseError,
-        PointedExportErrorData, TypecheckErrorKind,
+        Error, EvalErrorKind, ExportErrorKind, ImportErrorKind, ParseError, PointedExportErrorData,
+        TypecheckErrorKind,
     },
     eval::value::NickelValue,
+    program::ProgramBuilder,
     typecheck::TypecheckMode,
 };
 
@@ -70,16 +71,13 @@ fn run_test(test_case: TestCase<Test>, path: String) {
     let test = test_case.annotation.test;
 
     for _ in 0..repeat {
-        let mut p = TestProgram::new_from_source(
-            Cursor::new(program.clone()),
-            path.as_str(),
-            std::io::stderr(),
-            NullReporter {},
-        )
-        .expect("");
+        let mut builder = ProgramBuilder::new()
+            .add_source_string(program.clone(), &path)
+            .with_trace(std::io::stderr());
         if let Some(imports) = &test_case.annotation.nickel_path {
-            p.add_import_paths(imports.iter());
+            builder = builder.add_import_paths(imports.iter().cloned());
         }
+        let p: TestProgram = builder.build().unwrap();
         match test.clone() {
             Expectation::Error(expected_err) => {
                 let err = eval_strategy.eval_program_to_err(p);
@@ -274,11 +272,11 @@ impl PartialEq<Error> for ErrorExpectation {
                 }
                 _ => false,
             },
-            Error::ImportError(data) => match (self, &**data) {
+            Error::ImportError(data) => matches!(
+                (self, &**data),
                 (ImportParseError, ImportErrorKind::ParseErrors(..))
-                | (ImportIoError, ImportErrorKind::IOError(..)) => true,
-                _ => false,
-            },
+                    | (ImportIoError, ImportErrorKind::IOError(..))
+            ),
             Error::ParseErrors(es) => {
                 let first_error = es
                     .errors

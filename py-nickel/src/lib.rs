@@ -1,13 +1,12 @@
 use std::ffi::OsString;
-use std::io::Cursor;
 
 use nickel_lang_core::{
     error::{
-        Error, NullReporter,
+        Error,
         report::{ColorOpt, report_as_str},
     },
     eval::cache::{Cache, CacheImpl},
-    program::Program,
+    program::{Program, ProgramBuilder},
     serialize,
 };
 
@@ -36,16 +35,13 @@ fn error_to_exception<E: Into<Error>, EC: Cache>(error: E, program: &mut Program
 #[pyfunction]
 #[pyo3(signature = (expr, import_paths=None))]
 pub fn run(expr: String, import_paths: Option<Vec<OsString>>) -> PyResult<String> {
-    let mut program: Program<CacheImpl> = Program::new_from_source(
-        Cursor::new(expr),
-        "python",
-        std::io::sink(),
-        NullReporter {},
-    )?;
-
+    let mut builder = ProgramBuilder::new().add_source_string(expr, "python");
     if let Some(import_paths) = import_paths {
-        program.add_import_paths(import_paths.into_iter());
+        builder = builder.add_import_paths(import_paths);
     }
+    let mut program: Program<CacheImpl> = builder
+        .build()
+        .expect("building from a single in-memory source cannot fail");
 
     let term = program
         .eval_full()

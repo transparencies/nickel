@@ -69,6 +69,12 @@ pub struct AstAlloc {
     error_arena: typed_arena::Arena<ParseError>,
 }
 
+impl Default for AstAlloc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AstAlloc {
     /// Creates a new ast allocator.
     pub fn new() -> Self {

@@ -25,7 +25,7 @@ use crate::{
     cache::*,
     closurize::Closurize as _,
     error::{
-        Error, EvalError, EvalErrorKind, IOError, ParseError, ParseErrors, Reporter,
+        Error, EvalError, EvalErrorKind, IOError, NullReporter, ParseError, ParseErrors, Reporter,
         warning::Warning,
     },
     eval::{
@@ -260,216 +260,7 @@ pub struct Program<EC: EvalCache> {
     pub contracts: Vec<ProgramContract>,
 }
 
-/// The Possible Input Sources, anything that a Nickel program can be created from
-pub enum Input<T, S> {
-    /// A filepath
-    Path(S),
-    /// The source is anything that can be Read from, the second argument is the name the source should have in the cache.
-    Source(T, S, InputFormat),
-}
-
 impl<EC: EvalCache> Program<EC> {
-    /// Create a program by reading it from the standard input.
-    pub fn new_from_stdin(
-        stdin_format: InputFormat,
-        trace: impl Write + 'static,
-        reporter: impl Reporter<(Warning, Files)> + 'static,
-    ) -> std::io::Result<Self> {
-        Program::new_from_source_with_format(io::stdin(), "<stdin>", stdin_format, trace, reporter)
-    }
-
-    /// Constructor that abstracts over the Input type (file, string, etc.). Used by
-    /// the other constructors. Published for those that need abstraction over the kind of Input.
-    ///
-    /// The format of the input is Nickel by default. However, for [Input::Path]s, the format is
-    /// determined from the file extension. This is useful to merge Nickel and non-Nickel files, or
-    /// to apply extra contracts to non-Nickel configurations.
-    pub fn new_from_input<T, S>(
-        input: Input<T, S>,
-        trace: impl Write + 'static,
-        reporter: impl Reporter<(Warning, Files)> + 'static,
-    ) -> std::io::Result<Self>
-    where
-        T: Read,
-        S: Into<OsString>,
-    {
-        increment!("Program::new");
-        let mut cache = CacheHub::new();
-
-        let main_id = match input {
-            Input::Path(path) => {
-                let path = path.into();
-                let format = InputFormat::from_path(&path).unwrap_or_default();
-                cache.sources.add_file(path, format)?
-            }
-            Input::Source(source, name, format) => {
-                let path = PathBuf::from(name.into());
-                cache
-                    .sources
-                    .add_source(SourcePath::Path(path, format), source)?
-            }
-        };
-
-        Ok(Self {
-            main_id,
-            vm_ctxt: VmContext::new(cache, trace, reporter),
-            overrides: Vec::new(),
-            field: FieldPath::new(),
-            contracts: Vec::new(),
-        })
-    }
-
-    /// Constructor that abstracts over an iterator of Inputs (file, strings, etc). Published for
-    /// those that need abstraction over the kind of Input or want to mix multiple different kinds
-    /// of Input.
-    ///
-    /// The format of each input is Nickel by default. However, for [Input::Path]s, the format is
-    /// determined from the file extension. This is useful to merge Nickel and non-Nickel files, or
-    /// to apply extra contracts to non-Nickel configurations.
-    pub fn new_from_inputs<I, T, S>(
-        inputs: I,
-        trace: impl Write + 'static,
-        reporter: impl Reporter<(Warning, Files)> + 'static,
-    ) -> std::io::Result<Self>
-    where
-        I: IntoIterator<Item = Input<T, S>>,
-        T: Read,
-        S: Into<OsString>,
-    {
-        increment!("Program::new");
-        let mut cache = CacheHub::new();
-
-        let merge_term = inputs
-            .into_iter()
-            .map(|input| match input {
-                Input::Path(path) => {
-                    let path = path.into();
-                    let format = InputFormat::from_path(&path).unwrap_or_default();
-
-                    NickelValue::from(Term::Import(Import::Path { path, format }))
-                }
-                Input::Source(source, name, format) => {
-                    let name = name.into();
-                    let mut import_path = OsString::new();
-                    // See https://github.com/tweag/nickel/issues/2362 and the documentation of
-                    // IN_MEMORY_SOURCE_PATH_PREFIX
-                    import_path.push(IN_MEMORY_SOURCE_PATH_PREFIX);
-                    import_path.push(name.clone());
-
-                    cache
-                        .sources
-                        .add_source(SourcePath::Path(name.into(), format), source)
-                        .unwrap();
-                    NickelValue::from(Term::Import(Import::Path {
-                        path: import_path,
-                        format,
-                    }))
-                }
-            })
-            .reduce(|acc, f| mk_term::op2(BinaryOp::Merge(Label::default().into()), acc, f))
-            .unwrap();
-
-        let main_id = cache.sources.add_string(
-            SourcePath::Generated("main".into()),
-            format!("{merge_term}"),
-        );
-
-        Ok(Self {
-            main_id,
-            vm_ctxt: VmContext::new(cache, trace, reporter),
-            overrides: Vec::new(),
-            field: FieldPath::new(),
-            contracts: Vec::new(),
-        })
-    }
-
-    /// Create program from possibly multiple files. Each input `path` is
-    /// turned into a [`Term::Import`] and the main program will be the
-    /// [`BinaryOp::Merge`] of all the inputs.
-    pub fn new_from_files<I, P>(
-        paths: I,
-        trace: impl Write + 'static,
-        reporter: impl Reporter<(Warning, Files)> + 'static,
-    ) -> std::io::Result<Self>
-    where
-        I: IntoIterator<Item = P>,
-        P: Into<OsString>,
-    {
-        // The File type parameter is a dummy type and not used.
-        // It just needed to be something that implements Read, and File seemed fitting.
-        Self::new_from_inputs(
-            paths.into_iter().map(Input::<std::fs::File, _>::Path),
-            trace,
-            reporter,
-        )
-    }
-
-    pub fn new_from_file(
-        path: impl Into<OsString>,
-        trace: impl Write + 'static,
-        reporter: impl Reporter<(Warning, Files)> + 'static,
-    ) -> std::io::Result<Self> {
-        // The File type parameter is a dummy type and not used.
-        // It just needed to be something that implements Read, and File seemed fitting.
-        Self::new_from_input(Input::<std::fs::File, _>::Path(path), trace, reporter)
-    }
-
-    /// Create a program by reading it from a generic source.
-    pub fn new_from_source<T, S>(
-        source: T,
-        source_name: S,
-        trace: impl Write + 'static,
-        reporter: impl Reporter<(Warning, Files)> + 'static,
-    ) -> std::io::Result<Self>
-    where
-        T: Read,
-        S: Into<OsString>,
-    {
-        Self::new_from_input(
-            Input::Source(source, source_name, InputFormat::Nickel),
-            trace,
-            reporter,
-        )
-    }
-
-    /// Create a program by reading it from a generic source. The format of the source may be
-    /// specified to be something other than Nickel.
-    pub fn new_from_source_with_format<T, S>(
-        source: T,
-        source_name: S,
-        source_format: InputFormat,
-        trace: impl Write + 'static,
-        reporter: impl Reporter<(Warning, Files)> + 'static,
-    ) -> std::io::Result<Self>
-    where
-        T: Read,
-        S: Into<OsString>,
-    {
-        Self::new_from_input(
-            Input::Source(source, source_name, source_format),
-            trace,
-            reporter,
-        )
-    }
-
-    /// Create program from possibly multiple sources. The main program will be
-    /// the [`BinaryOp::Merge`] of all the inputs.
-    pub fn new_from_sources<I, T, S>(
-        sources: I,
-        trace: impl Write + 'static,
-        reporter: impl Reporter<(Warning, Files)> + 'static,
-    ) -> std::io::Result<Self>
-    where
-        I: IntoIterator<Item = (T, S)>,
-        T: Read,
-        S: Into<OsString>,
-    {
-        let inputs = sources
-            .into_iter()
-            .map(|(s, n)| Input::Source(s, n, InputFormat::Nickel));
-        Self::new_from_inputs(inputs, trace, reporter)
-    }
-
     /// Parse an assignment of the form `path.to_field=value` as an override, with the provided
     /// merge priority. Assignments are typically provided by the user on the command line, as part
     /// of the customize mode.
@@ -499,54 +290,6 @@ impl<EC: EvalCache> Program<EC> {
     /// Adds a contract to be applied to the final program.
     pub fn add_contract(&mut self, contract: ProgramContract) {
         self.contracts.push(contract);
-    }
-
-    /// Adds a list of contracts to be applied to the final program, specified as file paths. Those
-    /// contracts will be parsed, typechecked and further processed together with the rest of the
-    /// program.
-    pub fn add_contract_paths<P>(
-        &mut self,
-        contract_files: impl IntoIterator<Item = P>,
-    ) -> Result<(), Error>
-    where
-        OsString: From<P>,
-    {
-        let prog_contracts: Result<Vec<_>, _> = contract_files
-            .into_iter()
-            .map(|file| -> Result<_, Error> {
-                let file: OsString = file.into();
-                let file_str = file.to_string_lossy().into_owned();
-
-                let file_id = self
-                    .vm_ctxt
-                    .import_resolver
-                    .sources
-                    .add_file(file, InputFormat::Nickel)
-                    .map_err(|err| {
-                        Error::IOError(IOError(format!(
-                            "when opening contract file `{}`: {}",
-                            &file_str, err
-                        )))
-                    })?;
-
-                Ok(ProgramContract::Source(file_id))
-            })
-            .collect();
-
-        self.contracts.extend(prog_contracts?);
-        Ok(())
-    }
-
-    /// Adds import paths to the end of the list.
-    pub fn add_import_paths<P>(&mut self, paths: impl Iterator<Item = P>)
-    where
-        PathBuf: From<P>,
-    {
-        self.vm_ctxt.import_resolver.sources.add_import_paths(paths);
-    }
-
-    pub fn set_package_map(&mut self, map: PackageMap) {
-        self.vm_ctxt.import_resolver.sources.set_package_map(map)
     }
 
     /// Only parse the program (and any additional attached contracts), don't typecheck or
@@ -1154,6 +897,8 @@ impl<EC: EvalCache> Program<EC> {
         ))
     }
 
+    /// Skip loading the standard library on the next preparation step. Only available in debug
+    /// builds, since the underlying field on [`crate::cache::CacheHub`] is debug-gated.
     #[cfg(debug_assertions)]
     pub fn set_skip_stdlib(&mut self) {
         self.vm_ctxt.import_resolver.skip_stdlib = true;
@@ -1201,6 +946,410 @@ impl<EC: EvalCache> Program<EC> {
     /// Returns a reference to the position table.
     pub fn pos_table(&self) -> &PosTable {
         &self.vm_ctxt.pos_table
+    }
+}
+
+/// An error that occurred during a call to [`ProgramBuilder::build`].
+#[derive(Debug)]
+pub enum BuilderError {
+    /// No nickel code was provided to build the program.
+    NoInputs,
+    /// An I/O error occurred reading an input file.
+    Io {
+        path: Option<PathBuf>,
+        error: std::io::Error,
+    },
+}
+
+impl std::error::Error for BuilderError {}
+
+impl std::fmt::Display for BuilderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io { path, error } => {
+                if let Some(path) = path {
+                    write!(f, "{}: {error}", path.display())
+                } else {
+                    error.fmt(f)
+                }
+            }
+            Self::NoInputs => write!(f, "ProgramBuilder::build: no inputs were added"),
+        }
+    }
+}
+
+/// An input source held by a [`ProgramBuilder`].
+///
+/// The concrete `Read` implementation is erased to `Box<dyn Read>` so that builders can mix paths
+/// and heterogeneous in-memory sources without per-source generics.
+enum BuilderInput {
+    /// A filesystem path. The format is inferred from the path's extension.
+    Path(OsString),
+    /// An in-memory source. Parsed as `format` and identified by `name` in the source cache.
+    Source {
+        source: Box<dyn Read>,
+        name: OsString,
+        format: InputFormat,
+    },
+}
+
+/// Builder for [`Program`].
+///
+/// Accumulates inputs and configuration, then produces a [`Program`] via [`Self::build`]. All I/O
+/// is deferred to `build`, so the configuration methods themselves are infallible.
+///
+/// # Generic parameters
+///
+/// - `R` — the warning reporter type, defaulting to [`NullReporter`].
+/// - `W` — the trace writer type, defaulting to [`io::Sink`].
+///
+/// Defaults can be replaced with [`Self::with_reporter`] and [`Self::with_trace`]; both consume
+/// `self` and return a builder with the new generic parameter.
+///
+/// # Example
+///
+/// ```no_run
+/// use nickel_lang_core::{eval::cache::CacheImpl, program::{Program, ProgramBuilder}};
+///
+/// let program: Program<CacheImpl> = ProgramBuilder::new()
+///     .add_path("config.ncl")
+///     .add_import_paths(["./vendor"])
+///     .build()
+///     .unwrap();
+/// ```
+pub struct ProgramBuilder<R = NullReporter, W = io::Sink> {
+    inputs: Vec<BuilderInput>,
+    overrides: Vec<FieldOverride>,
+    field: FieldPath,
+    contracts: Vec<ProgramContract>,
+    contract_paths: Vec<OsString>,
+    import_paths: Vec<PathBuf>,
+    package_map: Option<PackageMap>,
+    trace: W,
+    reporter: R,
+}
+
+impl Default for ProgramBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ProgramBuilder {
+    /// Create an empty builder with the default reporter ([`NullReporter`]) and trace writer
+    /// ([`io::sink`]). Use [`Self::with_reporter`] and [`Self::with_trace`] to override them.
+    pub fn new() -> Self {
+        ProgramBuilder {
+            inputs: Vec::new(),
+            overrides: Vec::new(),
+            field: FieldPath::new(),
+            contracts: Vec::new(),
+            contract_paths: Vec::new(),
+            import_paths: Vec::new(),
+            package_map: None,
+            trace: io::sink(),
+            reporter: NullReporter {},
+        }
+    }
+}
+
+impl<R, W> ProgramBuilder<R, W> {
+    /// Add a single filesystem path as an input. The format is inferred from the path's extension.
+    pub fn add_path(mut self, path: impl Into<OsString>) -> Self {
+        self.inputs.push(BuilderInput::Path(path.into()));
+        self
+    }
+
+    /// Add multiple filesystem paths as inputs.
+    pub fn add_paths<I, P>(mut self, paths: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<OsString>,
+    {
+        self.inputs
+            .extend(paths.into_iter().map(|p| BuilderInput::Path(p.into())));
+        self
+    }
+
+    /// Add an in-memory source as an input, parsed as Nickel.
+    pub fn add_source(self, source: impl Read + 'static, name: impl Into<OsString>) -> Self {
+        self.add_source_with_format(source, name, InputFormat::Nickel)
+    }
+
+    /// Add the given string as an in-memory Nickel source.
+    pub fn add_source_string<S: ToOwned>(self, source: S, name: impl Into<OsString>) -> Self
+    where
+        S::Owned: Into<String>,
+    {
+        self.add_source_with_format(
+            std::io::Cursor::new(source.to_owned().into()),
+            name,
+            InputFormat::Nickel,
+        )
+    }
+
+    /// Add an in-memory source as an input, with an explicit format.
+    pub fn add_source_with_format(
+        mut self,
+        source: impl Read + 'static,
+        name: impl Into<OsString>,
+        format: InputFormat,
+    ) -> Self {
+        self.inputs.push(BuilderInput::Source {
+            source: Box::new(source),
+            name: name.into(),
+            format,
+        });
+        self
+    }
+
+    /// Add standard input as an input source, with the given format.
+    pub fn add_stdin(self, format: InputFormat) -> Self {
+        self.add_source_with_format(io::stdin(), "<stdin>", format)
+    }
+
+    /// Append overrides to be applied to the program at evaluation time.
+    pub fn add_overrides(mut self, overrides: impl IntoIterator<Item = FieldOverride>) -> Self {
+        self.overrides.extend(overrides);
+        self
+    }
+
+    /// Append a contract to be applied to the final program.
+    pub fn add_contract(mut self, contract: ProgramContract) -> Self {
+        self.contracts.push(contract);
+        self
+    }
+
+    /// Append contract files to be applied to the final program. The files are read at
+    /// [`Self::build`] time.
+    pub fn add_contract_paths<I, P>(mut self, paths: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<OsString>,
+    {
+        self.contract_paths
+            .extend(paths.into_iter().map(Into::into));
+        self
+    }
+
+    /// Append import paths, searched (in order) when resolving relative imports.
+    pub fn add_import_paths<I, P>(mut self, paths: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        self.import_paths.extend(paths.into_iter().map(Into::into));
+        self
+    }
+
+    /// Set the field path the program will operate on.
+    pub fn with_field_path(mut self, field: FieldPath) -> Self {
+        self.field = field;
+        self
+    }
+
+    /// Set the package map used to resolve package imports.
+    pub fn with_package_map(mut self, map: PackageMap) -> Self {
+        self.package_map = Some(map);
+        self
+    }
+
+    /// Replace the trace writer (where output from the `trace` builtin goes).
+    pub fn with_trace<W2>(self, trace: W2) -> ProgramBuilder<R, W2>
+    where
+        W2: Write + 'static,
+    {
+        ProgramBuilder {
+            inputs: self.inputs,
+            overrides: self.overrides,
+            field: self.field,
+            contracts: self.contracts,
+            contract_paths: self.contract_paths,
+            import_paths: self.import_paths,
+            package_map: self.package_map,
+            trace,
+            reporter: self.reporter,
+        }
+    }
+
+    /// Replace the warning reporter.
+    pub fn with_reporter<R2>(self, reporter: R2) -> ProgramBuilder<R2, W>
+    where
+        R2: Reporter<(Warning, Files)> + 'static,
+    {
+        ProgramBuilder {
+            inputs: self.inputs,
+            overrides: self.overrides,
+            field: self.field,
+            contracts: self.contracts,
+            contract_paths: self.contract_paths,
+            import_paths: self.import_paths,
+            package_map: self.package_map,
+            trace: self.trace,
+            reporter,
+        }
+    }
+}
+
+impl<R, W> ProgramBuilder<R, W>
+where
+    R: Reporter<(Warning, Files)> + 'static,
+    W: Write + 'static,
+{
+    /// Consume the builder and produce a [`Program`].
+    ///
+    /// Performs all deferred I/O: opens path inputs, registers in-memory sources, and loads
+    /// contract files. Returns an error if any of these fail, or if no input has been added.
+    pub fn build<EC: EvalCache>(self) -> Result<Program<EC>, BuilderError> {
+        increment!("Program::new");
+
+        let ProgramBuilder {
+            inputs,
+            overrides,
+            field,
+            mut contracts,
+            contract_paths,
+            import_paths,
+            package_map,
+            trace,
+            reporter,
+        } = self;
+
+        if inputs.is_empty() {
+            return Err(BuilderError::NoInputs);
+        }
+
+        let mut cache = CacheHub::new();
+
+        let main_id = if inputs.len() == 1 {
+            // Single-input fast path: register it directly and use its file id as the main id.
+            let input = inputs.into_iter().next().expect("len == 1");
+            register_single_input(&mut cache, input)?
+        } else {
+            // Multi-input: synthesize a `Merge` over imports of each input, then use that as the
+            // main id.
+            let mut iter = inputs.into_iter();
+            let first = iter.next().expect("len > 1");
+            let first_term = register_input_as_import(&mut cache, first)?;
+
+            let merge_term = iter.try_fold(
+                first_term,
+                |acc, input| -> Result<NickelValue, BuilderError> {
+                    let term = register_input_as_import(&mut cache, input)?;
+                    Ok(mk_term::op2(
+                        BinaryOp::Merge(Label::default().into()),
+                        acc,
+                        term,
+                    ))
+                },
+            )?;
+
+            cache.sources.add_string(
+                SourcePath::Generated("main".into()),
+                format!("{merge_term}"),
+            )
+        };
+
+        cache.sources.add_import_paths(import_paths.into_iter());
+        if let Some(map) = package_map {
+            cache.sources.set_package_map(map);
+        }
+
+        for file in contract_paths {
+            let file_id = cache
+                .sources
+                .add_file(file.clone(), InputFormat::Nickel)
+                .map_err(|err| BuilderError::Io {
+                    path: Some(file.into()),
+                    error: err,
+                })?;
+            contracts.push(ProgramContract::Source(file_id));
+        }
+
+        let vm_ctxt = VmContext::new(cache, trace, reporter);
+
+        Ok(Program {
+            main_id,
+            vm_ctxt,
+            overrides,
+            field,
+            contracts,
+        })
+    }
+}
+
+/// Register a single [`BuilderInput`] in the cache and return its [`FileId`]. Used for the
+/// single-input path of [`ProgramBuilder::build`], which doesn't need to synthesize a `Merge`
+/// term.
+fn register_single_input(
+    cache: &mut CacheHub,
+    input: BuilderInput,
+) -> Result<crate::files::FileId, BuilderError> {
+    match input {
+        BuilderInput::Path(path) => {
+            let format = InputFormat::from_path(&path).unwrap_or_default();
+            cache
+                .sources
+                .add_file(path.clone(), format)
+                .map_err(|err| BuilderError::Io {
+                    path: Some(path.into()),
+                    error: err,
+                })
+        }
+        BuilderInput::Source {
+            source,
+            name,
+            format,
+        } => {
+            let path = PathBuf::from(name);
+            cache
+                .sources
+                .add_source(SourcePath::Path(path.clone(), format), source)
+                .map_err(|err| BuilderError::Io {
+                    path: Some(path),
+                    error: err,
+                })
+        }
+    }
+}
+
+/// Register a [`BuilderInput`] in the cache and return a [`Term::Import`] referring to it. Used
+/// for the multi-input path of [`ProgramBuilder::build`].
+fn register_input_as_import(
+    cache: &mut CacheHub,
+    input: BuilderInput,
+) -> Result<NickelValue, BuilderError> {
+    match input {
+        BuilderInput::Path(path) => {
+            let format = InputFormat::from_path(&path).unwrap_or_default();
+            Ok(NickelValue::from(Term::Import(Import::Path {
+                path,
+                format,
+            })))
+        }
+        BuilderInput::Source {
+            source,
+            name,
+            format,
+        } => {
+            let mut import_path = OsString::new();
+            // See https://github.com/tweag/nickel/issues/2362 and the documentation of
+            // IN_MEMORY_SOURCE_PATH_PREFIX
+            import_path.push(IN_MEMORY_SOURCE_PATH_PREFIX);
+            import_path.push(&name);
+
+            cache
+                .sources
+                .add_source(SourcePath::Path(name.clone().into(), format), source)
+                .map_err(|err| BuilderError::Io {
+                    path: Some(name.into()),
+                    error: err,
+                })?;
+            Ok(NickelValue::from(Term::Import(Import::Path {
+                path: import_path,
+                format,
+            })))
+        }
     }
 }
 
@@ -1534,37 +1683,20 @@ mod doc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{error::NullReporter, eval::cache::CacheImpl};
+    use crate::eval::cache::CacheImpl;
     use assert_matches::assert_matches;
-    use std::io::Cursor;
+
+    fn build_test_program(s: &str) -> Result<Program<CacheImpl>, BuilderError> {
+        ProgramBuilder::new().add_source_string(s, "<test>").build()
+    }
 
     fn eval_full(s: &str) -> Result<NickelValue, Error> {
-        let src = Cursor::new(s);
-
-        let mut p: Program<CacheImpl> =
-            Program::new_from_source(src, "<test>", std::io::sink(), NullReporter {}).map_err(
-                |io_err| {
-                    Error::eval_error(
-                        Default::default(),
-                        EvalErrorKind::Other(format!("IO error: {io_err}"), PosIdx::NONE),
-                    )
-                },
-            )?;
+        let mut p = build_test_program(s)?;
         p.eval_full()
     }
 
     fn typecheck(s: &str) -> Result<(), Error> {
-        let src = Cursor::new(s);
-
-        let mut p: Program<CacheImpl> =
-            Program::new_from_source(src, "<test>", std::io::sink(), NullReporter {}).map_err(
-                |io_err| {
-                    Error::eval_error(
-                        Default::default(),
-                        EvalErrorKind::Other(format!("IO error: {io_err}"), PosIdx::NONE),
-                    )
-                },
-            )?;
+        let mut p = build_test_program(s)?;
         p.typecheck(TypecheckMode::Walk)
     }
 
@@ -1606,5 +1738,40 @@ mod tests {
             typecheck("{foo = 1 + `, bar : Str = \"a\"}"),
             Err(Error::ParseErrors(_))
         );
+    }
+
+    #[test]
+    fn builder_evaluates_single_source() {
+        let mut prog: Program<CacheImpl> = ProgramBuilder::new()
+            .add_source_string("1 + 2", "<builder-test>")
+            .build()
+            .unwrap();
+        let v = prog.eval_full().unwrap();
+        assert_eq!(v.without_pos(), crate::term::make::integer(3).without_pos());
+    }
+
+    #[test]
+    fn builder_merges_multiple_sources() {
+        let mut prog: Program<CacheImpl> = ProgramBuilder::new()
+            .add_source_string("{ a = 1 }", "<a.ncl>")
+            .add_source_string("{ b = 2 }", "<b.ncl>")
+            .build()
+            .unwrap();
+        let v = prog.eval_full().unwrap();
+        let expected = crate::mk_record!(
+            ("a", crate::term::make::integer(1)),
+            ("b", crate::term::make::integer(2))
+        );
+        assert_eq!(v.without_pos(), expected);
+    }
+
+    #[test]
+    fn builder_rejects_no_inputs() {
+        let result: Result<Program<CacheImpl>, _> = ProgramBuilder::new().build();
+        match result {
+            Err(BuilderError::NoInputs) => {}
+            Err(e) => panic!("expected IOError, got {e:?}"),
+            Ok(_) => panic!("expected error for empty input set"),
+        }
     }
 }
