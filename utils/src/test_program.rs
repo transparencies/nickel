@@ -1,27 +1,23 @@
 use nickel_lang_core::{
     ast::{Ast, AstAlloc},
-    error::{Error, NullReporter, ParseError},
+    error::{Error, ParseError},
     eval::{cache::CacheImpl, value::NickelValue},
     files::Files,
     parser::{ErrorTolerantParser as _, ErrorTolerantParserCompat, ExtendedTerm, grammar, lexer},
     position::PosTable,
-    program::Program,
+    program::{Program, ProgramBuilder},
     typecheck::TypecheckMode,
 };
-
-use std::io::Cursor;
 
 pub type TestProgram = Program<CacheImpl>;
 
 /// Create a program from a Nickel expression provided as a string.
 pub fn program_from_expr(s: impl std::string::ToString) -> TestProgram {
-    TestProgram::new_from_source(
-        Cursor::new(s.to_string()),
-        "test",
-        std::io::stderr(),
-        NullReporter {},
-    )
-    .unwrap()
+    ProgramBuilder::new()
+        .add_source_string(s.to_string(), "test")
+        .with_trace(std::io::stderr())
+        .build()
+        .unwrap()
 }
 
 pub fn eval(s: impl std::string::ToString) -> Result<NickelValue, Error> {
@@ -67,6 +63,9 @@ pub fn typecheck_fixture(f: &str) -> Result<(), Error> {
 
 fn program_from_test_fixture(f: &str) -> Program<CacheImpl> {
     let path = format!("{}/../tests/integration/{}", env!("CARGO_MANIFEST_DIR"), f);
-    Program::new_from_file(&path, std::io::stderr(), NullReporter {})
-        .unwrap_or_else(|e| panic!("Could not create program from `{path}`\n {e}"))
+    ProgramBuilder::new()
+        .add_path(&path)
+        .with_trace(std::io::stderr())
+        .build()
+        .unwrap_or_else(|e| panic!("Could not create program from `{path}`\n {e:?}"))
 }

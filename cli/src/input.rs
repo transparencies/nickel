@@ -1,6 +1,11 @@
 use std::path::PathBuf;
 
-use nickel_lang_core::{ast::InputFormat, eval::cache::lazy::CBNCache, program::Program};
+use nickel_lang_core::{
+    ast::InputFormat,
+    eval::cache::lazy::CBNCache,
+    files::Files,
+    program::{Program, ProgramBuilder},
+};
 
 #[cfg(feature = "package-experimental")]
 use nickel_lang_package::{ManifestFile, config::Config as PackageConfig};
@@ -81,32 +86,10 @@ pub trait Prepare {
 
 impl<C: clap::Args + Customize, F: clap::Args + InputFormatOptions> Prepare for InputOptions<C, F> {
     fn prepare(&self, ctx: &mut GlobalContext) -> PrepareResult<Program<CBNCache>> {
-        let mut program = match self.files.as_slice() {
-            [] => Program::new_from_stdin(
-                self.format_options.stdin_format(),
-                std::io::stderr(),
-                ctx.reporter.clone(),
-            ),
-            [p] => Program::new_from_file(p, std::io::stderr(), ctx.reporter.clone()),
-            files => Program::new_from_files(files, std::io::stderr(), ctx.reporter.clone()),
-        }?;
-
-        program
-            .add_contract_paths(self.apply_contract.iter())
-            .map_err(|error| {
-                PrepareError::Error(crate::error::Error::Program {
-                    error,
-                    files: program.files(),
-                })
-            })?;
-        program.add_import_paths(self.import_path.iter());
-
-        if let Ok(nickel_path) = std::env::var("NICKEL_IMPORT_PATH") {
-            program.add_import_paths(nickel_path.split(':'));
-        }
-
+        // Resolve the package map first — it's independent of program construction and may itself
+        // fail (manifest open / lock / package fetch).
         #[cfg(feature = "package-experimental")]
-        {
+        let package_map = {
             let manifest_path = self.manifest_path.clone().or_else(|| {
                 // If the manifest path isn't given, where should we start
                 // looking for it? If there's only one file, we start with the
@@ -137,9 +120,47 @@ impl<C: clap::Args + Customize, F: clap::Args + InputFormatOptions> Prepare for 
 
                 let (_lock, resolution) = manifest.lock(config.clone())?;
                 nickel_lang_package::index::ensure_index_packages_downloaded(&resolution)?;
-                program.set_package_map(resolution.package_map(&manifest)?);
+                Some(resolution.package_map(&manifest)?)
+            } else {
+                None
             }
+        };
+
+        let mut builder = ProgramBuilder::new()
+            .with_trace(std::io::stderr())
+            .with_reporter(ctx.reporter.clone());
+
+        builder = if self.files.is_empty() {
+            builder.add_stdin(self.format_options.stdin_format())
+        } else {
+            builder.add_paths(self.files.iter().cloned())
+        };
+
+        builder = builder
+            .add_contract_paths(self.apply_contract.iter().cloned())
+            .add_import_paths(self.import_path.iter().cloned());
+
+        if let Ok(nickel_path) = std::env::var("NICKEL_IMPORT_PATH") {
+            builder = builder.add_import_paths(nickel_path.split(':').map(PathBuf::from));
         }
+
+        #[cfg(feature = "package-experimental")]
+        if let Some(map) = package_map {
+            builder = builder.with_package_map(map);
+        }
+
+        // The builder defers all I/O to `build()`, so any failure here is from opening an input
+        // file, registering an in-memory source, or loading a contract path. All such errors are
+        // `IOError`, whose rendering doesn't need the source database — `Files::empty()` is
+        // sufficient.
+        // `mut` is only needed in debug builds (for `set_skip_stdlib` below).
+        #[cfg_attr(not(debug_assertions), allow(unused_mut))]
+        let mut program = builder.build().map_err(|e| {
+            PrepareError::Error(crate::error::Error::Program {
+                files: Files::empty(),
+                error: e.into(),
+            })
+        })?;
 
         #[cfg(debug_assertions)]
         if self.nostdlib {

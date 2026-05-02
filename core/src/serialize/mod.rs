@@ -842,7 +842,7 @@ mod tests {
         cache::CacheHub,
         error::NullReporter,
         eval::{VirtualMachine, VmContext, cache::CacheImpl},
-        program::Program,
+        program::{Program, ProgramBuilder},
         term::{BinaryOp, make as mk_term},
     };
     use serde_json::json;
@@ -850,14 +850,11 @@ mod tests {
 
     #[track_caller]
     fn eval(s: &str) -> NickelValue {
-        let src = Cursor::new(s);
-        let mut prog = Program::<CacheImpl>::new_from_source(
-            src,
-            "<test>",
-            std::io::stderr(),
-            NullReporter {},
-        )
-        .unwrap();
+        let mut prog: Program<CacheImpl> = ProgramBuilder::new()
+            .add_source_string(s.to_owned(), "<test>")
+            .with_trace(std::io::stderr())
+            .build()
+            .unwrap();
         prog.eval_full().expect("program eval should succeed")
     }
 

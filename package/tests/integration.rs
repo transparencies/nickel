@@ -3,9 +3,9 @@ use std::{path::Path, process::ExitCode, sync::Arc};
 use util::{PackageBuilder, set_up_git_repo};
 
 use nickel_lang_core::{
-    error::{NullReporter, report::report_as_str},
+    error::report::report_as_str,
     eval::cache::lazy::CBNCache,
-    program::Program,
+    program::{Program, ProgramBuilder},
 };
 use nickel_lang_package::{
     ManifestFile, config::Config, index::PackageIndex, lock::LockFile, manifest::MANIFEST_NAME,
@@ -258,9 +258,11 @@ fn eval_all(manifest_path: &Path, config: &Config) {
         if name == MANIFEST_NAME || !name.ends_with(".ncl") {
             continue;
         }
-        let mut program =
-            Program::<CBNCache>::new_from_file(&path, std::io::sink(), NullReporter {}).unwrap();
-        program.set_package_map(map.clone());
+        let mut program: Program<CBNCache> = ProgramBuilder::new()
+            .add_path(path.as_os_str().to_owned())
+            .with_package_map(map.clone())
+            .build()
+            .unwrap();
         if let Err(e) = program.eval_full() {
             panic!(
                 "{}",

@@ -28,6 +28,7 @@ use crate::{
         ty_path::{self, PathSpan},
     },
     position::{PosIdx, PosTable, RawSpan, TermPos},
+    program::BuilderError,
     repl,
     serialize::{ExportFormat, NickelPointer, NickelPointerElem},
     term::{Number, record::FieldMetadata},
@@ -778,6 +779,21 @@ impl From<ImportErrorKind> for TypecheckError {
         Box::new(TypecheckErrorData::new(AstAlloc::new(), |_alloc| {
             TypecheckErrorKind::ImportError(error)
         }))
+    }
+}
+
+impl From<BuilderError> for Error {
+    fn from(error: BuilderError) -> Error {
+        match error {
+            BuilderError::NoInputs => Error::IOError(IOError(
+                "ProgramBuilder::build: no inputs were added".to_owned(),
+            )),
+            BuilderError::Io {
+                path: Some(p),
+                error,
+            } => Error::IOError(IOError(format!("source {}: {error}", p.display()))),
+            BuilderError::Io { path: None, error } => Error::IOError(IOError(error.to_string())),
+        }
     }
 }
 

@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use gix::ObjectId;
-use nickel_lang_core::{error::INTERNAL_ERROR_MSG, files::Files, identifier::Ident};
+use nickel_lang_core::{
+    error::INTERNAL_ERROR_MSG, files::Files, identifier::Ident, program::BuilderError,
+};
 
 use crate::{
     UnversionedDependency,
@@ -303,5 +305,17 @@ impl From<gix::open::Error> for Error {
 impl From<gix::reference::head_tree_id::Error> for Error {
     fn from(e: gix::reference::head_tree_id::Error) -> Self {
         Self::OtherGit(e.into())
+    }
+}
+
+impl From<BuilderError> for Error {
+    fn from(error: BuilderError) -> Error {
+        match error {
+            BuilderError::NoInputs => Error::Io {
+                path: None,
+                error: std::io::Error::other("ProgramBuilder::build: no inputs were added"),
+            },
+            BuilderError::Io { path, error } => Error::Io { path, error },
+        }
     }
 }

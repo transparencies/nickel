@@ -1,7 +1,6 @@
 //! Deserialization of an evaluated program to plain Rust types.
 
 use malachite::base::{num::conversion::traits::RoundingFrom, rounding_modes::RoundingMode};
-use nickel_lang_parser::ast::InputFormat;
 use std::{ffi::OsString, io::Cursor, iter::ExactSizeIterator};
 
 use serde::de::{
@@ -10,7 +9,7 @@ use serde::de::{
 };
 
 use crate::{
-    error::{self, NullReporter},
+    error,
     eval::{
         cache::CacheImpl,
         value::{
@@ -19,7 +18,7 @@ use crate::{
         },
     },
     identifier::LocIdent,
-    program::{Input, Program},
+    program::{Program, ProgramBuilder},
     term::{IndexMap, record::Field},
 };
 
@@ -116,15 +115,11 @@ impl From<RustDeserializationError> for EvalOrDeserError {
     }
 }
 
-fn from_input<'a, T, Content, Source>(input: Input<Content, Source>) -> Result<T, EvalOrDeserError>
+fn from_builder<'a, T>(builder: ProgramBuilder) -> Result<T, EvalOrDeserError>
 where
     T: serde::Deserialize<'a>,
-    Content: std::io::Read,
-    Source: Into<OsString>,
 {
-    let mut program =
-        Program::<CacheImpl>::new_from_input(input, std::io::stderr(), NullReporter {})
-            .map_err(error::IOError::from)?;
+    let mut program: Program<CacheImpl> = builder.with_trace(std::io::stderr()).build()?;
 
     Ok(T::deserialize(program.eval_full_for_export().map_err(
         |err| EvalOrDeserError::new(err, program.files()),
@@ -135,29 +130,29 @@ pub fn from_str<'a, T>(s: &'a str) -> Result<T, EvalOrDeserError>
 where
     T: serde::Deserialize<'a>,
 {
-    from_input(Input::Source(Cursor::new(s), "string", InputFormat::Nickel))
+    from_builder(ProgramBuilder::new().add_source_string(s.to_owned(), "string"))
 }
 
 pub fn from_slice<'a, T>(v: &'a [u8]) -> Result<T, EvalOrDeserError>
 where
     T: serde::Deserialize<'a>,
 {
-    from_input(Input::Source(Cursor::new(v), "slice", InputFormat::Nickel))
+    from_builder(ProgramBuilder::new().add_source(Cursor::new(v.to_owned()), "slice"))
 }
 
 pub fn from_path<T>(path: impl Into<OsString>) -> Result<T, EvalOrDeserError>
 where
     T: serde::de::DeserializeOwned,
 {
-    from_input(Input::<std::fs::File, _>::Path(path))
+    from_builder(ProgramBuilder::new().add_path(path))
 }
 
 pub fn from_reader<R, T>(rdr: R) -> Result<T, EvalOrDeserError>
 where
-    R: std::io::Read,
+    R: std::io::Read + 'static,
     T: serde::de::DeserializeOwned,
 {
-    from_input(Input::Source(rdr, "reader", InputFormat::Nickel))
+    from_builder(ProgramBuilder::new().add_source(rdr, "reader"))
 }
 
 /// An error occurred during deserialization to Rust.
@@ -752,22 +747,20 @@ mod tests {
 
     use nickel_lang_utils::{
         nickel_lang_core::{
-            deserialize::RustDeserializationError, error::NullReporter, eval::value::NickelValue,
+            deserialize::RustDeserializationError, eval::value::NickelValue,
+            program::ProgramBuilder,
         },
         test_program::TestProgram,
     };
     use serde::Deserialize;
 
     fn eval(source: &str) -> NickelValue {
-        TestProgram::new_from_source(
-            Cursor::new(source),
-            "source",
-            std::io::stderr(),
-            NullReporter {},
-        )
-        .expect("program shouldn't fail")
-        .eval_full()
-        .expect("evaluation shouldn't fail")
+        let mut program: TestProgram = ProgramBuilder::new()
+            .add_source_string(source.to_owned(), "source")
+            .with_trace(std::io::stderr())
+            .build()
+            .expect("program shouldn't fail");
+        program.eval_full().expect("evaluation shouldn't fail")
     }
 
     #[test]

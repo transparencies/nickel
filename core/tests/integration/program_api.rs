@@ -1,31 +1,19 @@
 use nickel_lang_core::{
-    ast::InputFormat,
     error::Sink,
     eval::cache::lazy::CBNCache,
-    program::{Input, Program},
+    program::{Program, ProgramBuilder},
 };
 
 // Regression test for https://github.com/tweag/nickel/issues/2362
 #[test]
 fn multiple_inputs_non_paths() {
-    let sink = Sink::default();
-    let mut prog: Program<CBNCache> = Program::new_from_inputs(
-        [
-            Input::Source(
-                "{}".to_owned().as_bytes(),
-                &String::from("fst"),
-                InputFormat::Nickel,
-            ),
-            Input::Source(
-                "{} & {}".to_owned().as_bytes(),
-                &String::from("snd"),
-                InputFormat::Nickel,
-            ),
-        ],
-        std::io::stderr(),
-        sink,
-    )
-    .unwrap();
+    let mut prog: Program<CBNCache> = ProgramBuilder::new()
+        .add_source_string("{}", "fst")
+        .add_source_string("{} & {}", "snd")
+        .with_trace(std::io::stderr())
+        .with_reporter(Sink::default())
+        .build()
+        .unwrap();
 
     assert_eq!(&prog.eval_full_for_export().unwrap().to_string(), "{}");
 }

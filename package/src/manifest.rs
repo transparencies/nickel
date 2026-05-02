@@ -7,11 +7,10 @@ use std::{
 
 use nickel_lang_core::{
     cache::normalize_rel_path,
-    error::NullReporter,
     eval::{cache::CacheImpl, value::NickelValue},
     identifier::Ident,
     label::Label,
-    program::{Program, ProgramContract},
+    program::{Program, ProgramBuilder, ProgramContract},
     term::{RuntimeContract, Term, make},
 };
 use serde::Deserialize;
@@ -19,7 +18,7 @@ use serde::Deserialize;
 use crate::{
     Dependency, GitDependency, IndexDependency, UnversionedPrecisePkg,
     config::Config,
-    error::{Error, IoResultExt},
+    error::Error,
     index::{self, PackageIndex, path::RelativePathError},
     lock::{LockFile, LockFileEntry},
     resolve::{self, Resolution},
@@ -190,20 +189,26 @@ impl ManifestFile {
     /// Panics if the path has no parent.
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, Error> {
         let path = path.as_ref();
-        let prog =
-            Program::new_from_file(path, std::io::stderr(), NullReporter {}).with_path(path)?;
+        let prog = ProgramBuilder::new()
+            .add_path(path.as_os_str().to_owned())
+            .with_trace(std::io::stderr())
+            .build()?;
         ManifestFile::from_prog(path, prog)
     }
 
     /// Parse a file from UTF-8 data, evaluate it as a nickel file, and return the evaluated manifest.
     pub fn from_contents(data: &[u8]) -> Result<Self, Error> {
-        let prog = Program::new_from_source(
-            std::io::Cursor::new(data),
-            "<in-memory manifest>",
-            std::io::stderr(),
-            NullReporter {},
-        )
-        .without_path()?;
+        let prog = ProgramBuilder::new()
+            .add_source(
+                std::io::Cursor::new(data.to_owned()),
+                "<in-memory manifest>",
+            )
+            .with_trace(std::io::stderr())
+            .build()
+            .map_err(|e| crate::error::Error::Io {
+                path: None,
+                error: std::io::Error::other(format!("{e:?}")),
+            })?;
         ManifestFile::from_prog("<generated>".as_ref(), prog)
     }
 

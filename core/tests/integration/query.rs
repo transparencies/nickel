@@ -1,7 +1,6 @@
 use nickel_lang_core::{
-    error::NullReporter,
     eval::cache::lazy::CBNCache,
-    program::Program,
+    program::{Program, ProgramBuilder},
     term::{TypeAnnotation, make as mk_term, record::FieldMetadata},
 };
 
@@ -18,18 +17,20 @@ impl ProgramExt for Program<CBNCache> {
     }
 }
 
+fn program_from(src: &'static str) -> TestProgram {
+    ProgramBuilder::new()
+        .add_source_string(src, "regr_tests")
+        .with_trace(std::io::stderr())
+        .build()
+        .unwrap()
+}
+
 #[test]
 pub fn test_query_metadata_basic() {
-    let result = TestProgram::new_from_source(
-        "{val | doc \"Test basic\" = (1 + 1)}".as_bytes(),
-        "regr_tests",
-        std::io::stderr(),
-        NullReporter {},
-    )
-    .unwrap()
-    .with_field_path("val")
-    .query()
-    .unwrap();
+    let result = program_from("{val | doc \"Test basic\" = (1 + 1)}")
+        .with_field_path("val")
+        .query()
+        .unwrap();
 
     assert_eq!(result.metadata.doc(), Some("Test basic"));
     assert_eq!(result.value.unwrap().without_pos(), mk_term::integer(2));
@@ -41,27 +42,9 @@ pub fn test_query_with_wildcard() {
 
     /// Checks whether `lhs` and `rhs` both evaluate to terms with the same static type
     #[track_caller]
-    fn assert_types_eq(lhs: &str, rhs: &str, path: &str) {
-        let term1 = TestProgram::new_from_source(
-            lhs.as_bytes(),
-            "regr_tests",
-            std::io::stderr(),
-            NullReporter {},
-        )
-        .unwrap()
-        .with_field_path(path)
-        .query()
-        .unwrap();
-        let term2 = TestProgram::new_from_source(
-            rhs.as_bytes(),
-            "regr_tests",
-            std::io::stderr(),
-            NullReporter {},
-        )
-        .unwrap()
-        .with_field_path(path)
-        .query()
-        .unwrap();
+    fn assert_types_eq(lhs: &'static str, rhs: &'static str, path: &str) {
+        let term1 = program_from(lhs).with_field_path(path).query().unwrap();
+        let term2 = program_from(rhs).with_field_path(path).query().unwrap();
         let (
             Some(FieldMetadata {
                 annotation:
@@ -95,16 +78,10 @@ pub fn test_query_with_wildcard() {
     }
 
     // Without wildcard, the result has no type annotation
-    let result = TestProgram::new_from_source(
-        "{value = 10}".as_bytes(),
-        "regr_tests",
-        std::io::stderr(),
-        NullReporter {},
-    )
-    .unwrap()
-    .with_field_path(path)
-    .query()
-    .unwrap();
+    let result = program_from("{value = 10}")
+        .with_field_path(path)
+        .query()
+        .unwrap();
 
     assert!(result.metadata.is_empty());
     // assert!(matches!(
