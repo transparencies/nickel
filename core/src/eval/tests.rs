@@ -428,3 +428,75 @@ fn foreign_id() {
     let fid = LocIdent::from(Ident::new("ForeignId"));
     assert_matches!(ty.as_enum_tag(), Some(f) if f == fid);
 }
+
+// Tests for the `extend_env` plumbing on `VmContext`: bindings layered on top of the stdlib at
+// `VirtualMachine::new` time, with extras winning on collision.
+mod extras {
+    use super::*;
+    use crate::{
+        cache::{CacheHub, SourcePath},
+        error::Error,
+    };
+
+    /// Build a program with the given source and extras, prepare and evaluate it.
+    fn run(source: &str, extras: Vec<(Ident, NickelValue)>) -> Result<NickelValue, Error> {
+        let mut cache = CacheHub::new();
+        let file_id = cache
+            .sources
+            .add_string(SourcePath::Generated("test".into()), source.to_string());
+
+        let mut vm_ctxt: VmContext<_, CacheImpl> =
+            VmContext::new(cache, std::io::sink(), NullReporter {}).with_extend_env(extras);
+
+        let prepared = vm_ctxt.prepare_eval(file_id)?;
+        Ok(VirtualMachine::new(&mut vm_ctxt).eval(prepared)?)
+    }
+
+    #[test]
+    fn extras_resolved() {
+        let v = run("a + 1", vec![("a".into(), mk_term::integer(1))]).unwrap();
+        assert_eq!(v.without_pos(), mk_term::integer(2));
+    }
+
+    #[test]
+    fn extras_alongside_stdlib() {
+        // Reference both the extra `a` and an stdlib symbol; std.array.length [a] == 1.
+        let v = run(
+            "std.array.length [a]",
+            vec![("a".into(), mk_term::integer(1))],
+        )
+        .unwrap();
+        assert_eq!(v.without_pos(), mk_term::integer(1));
+    }
+
+    #[test]
+    fn extras_win_collision() {
+        // Override the top-level `std` binding with an integer to prove extras shadow stdlib.
+        let v = run("std", vec![("std".into(), mk_term::integer(42))]).unwrap();
+        assert_eq!(v.without_pos(), mk_term::integer(42));
+    }
+
+    #[test]
+    fn empty_extras_is_noop() {
+        let with_empty = run("std.array.length [1, 2, 3]", Vec::new())
+            .unwrap()
+            .without_pos();
+
+        // Same source evaluated with no extras configured at all.
+        let mut cache = CacheHub::new();
+        let file_id = cache.sources.add_string(
+            SourcePath::Generated("test".into()),
+            String::from("std.array.length [1, 2, 3]"),
+        );
+        let mut vm_ctxt: VmContext<_, CacheImpl> =
+            VmContext::new(cache, std::io::sink(), NullReporter {});
+        let prepared = vm_ctxt.prepare_eval(file_id).unwrap();
+        let baseline = VirtualMachine::new(&mut vm_ctxt)
+            .eval(prepared)
+            .unwrap()
+            .without_pos();
+
+        assert_eq!(with_empty, baseline);
+        assert_eq!(with_empty, mk_term::integer(3));
+    }
+}
