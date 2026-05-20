@@ -183,6 +183,8 @@ macro_rules! ncl_bench_group {
                                     trace: Box::new(std::io::sink()),
                                     reporter: Box::new(nickel_lang_core::error::NullReporter {}),
                                     cache: eval_cache.clone(),
+                                    #[cfg(feature = "incremental-experimental")]
+                                    enable_incremental_evaluation: false,
                                     pos_table,
                             };
 

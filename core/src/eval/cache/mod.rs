@@ -87,8 +87,8 @@ pub trait Cache: Clone {
         idx: &mut CacheIndex,
     ) -> Result<Self::UpdateIndex, BlackholedError>;
 
-    /// Attach a [CUI][crate::eval::cui] to the given index, thereby marking it as being of
-    /// interest for incremental evaluation.
+    /// Attach a [CUI][crate::eval::semantic_hash] to the given index, thereby marking it as being
+    /// of interest for incremental evaluation.
     ///
     /// The default implementation does nothing, which is the behavior for caches that don't
     /// support incremental evaluation, such as the default CBN cache. In practice we never expect

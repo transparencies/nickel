@@ -746,8 +746,8 @@ mod incremental {
         }
 
         /// Returns the semantic hash of this thunk. If the hash has been computed before (and
-        /// stored in [ThunkData::hash]), returns it immediately. Otherwise, get the semantic hash
-        /// of the dependencies, computes the semantic hash of this thunk using the CUI, and
+        /// stored in [ThunkData::thunk_hash]), returns it immediately. Otherwise, get the semantic
+        /// hash of the dependencies, computes the semantic hash of this thunk using the CUI, and
         /// returns the result. In the latter case, the hash of the (transitive) dependencies are
         /// recursively fetched in the same way (they were either cached from a previous
         /// computations, or are computed on-demand).
