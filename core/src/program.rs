@@ -1028,6 +1028,8 @@ pub struct ProgramBuilder<R = NullReporter, W = io::Sink> {
     import_paths: Vec<PathBuf>,
     package_map: Option<PackageMap>,
     extra_env: Vec<(Ident, NickelValue)>,
+    #[cfg(feature = "incremental-experimental")]
+    enable_incremental_evaluation: bool,
     trace: W,
     reporter: R,
 }
@@ -1051,6 +1053,8 @@ impl ProgramBuilder {
             import_paths: Vec::new(),
             package_map: None,
             extra_env: Vec::new(),
+            #[cfg(feature = "incremental-experimental")]
+            enable_incremental_evaluation: false,
             trace: io::sink(),
             reporter: NullReporter {},
         }
@@ -1172,6 +1176,8 @@ impl<R, W> ProgramBuilder<R, W> {
             import_paths: self.import_paths,
             package_map: self.package_map,
             extra_env: self.extra_env,
+            #[cfg(feature = "incremental-experimental")]
+            enable_incremental_evaluation: self.enable_incremental_evaluation,
             trace,
             reporter: self.reporter,
         }
@@ -1191,6 +1197,8 @@ impl<R, W> ProgramBuilder<R, W> {
             import_paths: self.import_paths,
             package_map: self.package_map,
             extra_env: self.extra_env,
+            #[cfg(feature = "incremental-experimental")]
+            enable_incremental_evaluation: self.enable_incremental_evaluation,
             trace: self.trace,
             reporter,
         }
@@ -1217,6 +1225,13 @@ impl<R, W> ProgramBuilder<R, W> {
         self.extra_env.extend(env);
         self
     }
+
+    /// Enable incremental evaluation (experimental). Disabled by default.
+    #[cfg(feature = "incremental-experimental")]
+    pub fn with_incremental_evaluation(mut self) -> Self {
+        self.enable_incremental_evaluation = true;
+        self
+    }
 }
 
 impl<R, W> ProgramBuilder<R, W>
@@ -1240,6 +1255,8 @@ where
             import_paths,
             package_map,
             extra_env,
+            #[cfg(feature = "incremental-experimental")]
+            enable_incremental_evaluation,
             trace,
             reporter,
         } = self;
@@ -1295,7 +1312,13 @@ where
             contracts.push(ProgramContract::Source(file_id));
         }
 
-        let vm_ctxt = VmContext::new(cache, trace, reporter).with_extend_env(extra_env);
+        #[allow(unused_mut)]
+        let mut vm_ctxt = VmContext::new(cache, trace, reporter).with_extend_env(extra_env);
+
+        #[cfg(feature = "incremental-experimental")]
+        if enable_incremental_evaluation {
+            vm_ctxt = vm_ctxt.with_incremental_evaluation();
+        }
 
         Ok(Program {
             main_id,

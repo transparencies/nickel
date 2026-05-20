@@ -108,10 +108,14 @@ pub mod contract_eq;
 pub mod fixpoint;
 pub mod merge;
 pub mod operation;
+#[cfg(feature = "incremental-experimental")]
+pub mod semantic_hash;
 pub mod stack;
 pub mod value;
 
 use callstack::*;
+#[cfg(feature = "incremental-experimental")]
+use semantic_hash::Register as _;
 use stack::{
     Op1ContItem, Op2FirstContItem, OpNContItem, PrimopAppInfo, SealedCont, Stack, StrAccItem,
 };
@@ -126,7 +130,8 @@ impl AsRef<Vec<StackElem>> for CallStack {
 }
 
 /// The context of the Nickel virtual machine. The context stores external state that might need to
-/// outlive one VM instance. The virtual machine typically borrows the context mutably.
+/// outlive one VM instance and configuration. The virtual machine typically borrows the context
+/// mutably.
 pub struct VmContext<R: ImportResolver, C: Cache> {
     /// The interface used to resolve and fetch imports.
     pub import_resolver: R,
@@ -144,7 +149,12 @@ pub struct VmContext<R: ImportResolver, C: Cache> {
     /// is created via [VirtualMachine::new]. On collision, the extension wins; on duplicate
     /// identifiers within the vector, the later entry wins. Configured via
     /// [Self::with_extend_env]; defaults to empty.
-    extend_env: Vec<(Ident, NickelValue)>,
+    pub extend_env: Vec<(Ident, NickelValue)>,
+    /// Whether incremental evaluation is enabled or not. Incremental evaluation is currently
+    /// feature-gated, but even when compiled with the feature, it needs to be explicitly enabled
+    /// through this feature.
+    #[cfg(feature = "incremental-experimental")]
+    pub enable_incremental_evaluation: bool,
 }
 
 impl<R: ImportResolver, C: Cache> VmContext<R, C> {
@@ -173,6 +183,8 @@ impl<R: ImportResolver, C: Cache> VmContext<R, C> {
             cache: C::new(),
             pos_table,
             extend_env: Vec::new(),
+            #[cfg(feature = "incremental-experimental")]
+            enable_incremental_evaluation: false,
         }
     }
 
@@ -182,6 +194,13 @@ impl<R: ImportResolver, C: Cache> VmContext<R, C> {
     /// with the initial evaluation environment, the extension wins.
     pub fn with_extend_env(mut self, env: Vec<(Ident, NickelValue)>) -> Self {
         self.extend_env = env;
+        self
+    }
+
+    /// Enable incremental evaluation for this VM.
+    #[cfg(feature = "incremental-experimental")]
+    pub fn with_incremental_evaluation(mut self) -> Self {
+        self.enable_incremental_evaluation = true;
         self
     }
 }
@@ -784,6 +803,11 @@ impl<'ctxt, R: ImportResolver, C: Cache> VirtualMachine<'ctxt, R, C> {
                             indices.push(idx.clone());
                         }
 
+                        #[cfg(feature = "incremental-experimental")]
+                        if self.context.enable_incremental_evaluation {
+                            idx.register(&mut self.context.cache);
+                        }
+
                         env.insert(x.ident(), idx);
                     }
 
@@ -920,13 +944,24 @@ impl<'ctxt, R: ImportResolver, C: Cache> VirtualMachine<'ctxt, R, C> {
                                 })
                                 .collect();
 
+                            #[cfg(feature = "incremental-experimental")]
+                            if self.context.enable_incremental_evaluation {
+                                array_data.register(&mut self.context.cache);
+                            }
+
                             NickelValue::array(array, pending_contracts, pos_idx)
                         }
-                        ValueContentRef::Record(Container::Alloc(data)) => NickelValue::record(
+                        ValueContentRef::Record(Container::Alloc(data)) => {
                             // unwrap(): we treated the empty record case already
-                            data.clone().closurize(&mut self.context.cache, env),
-                            pos_idx,
-                        ),
+                            let record_data = data.clone().closurize(&mut self.context.cache, env);
+
+                            #[cfg(feature = "incremental-experimental")]
+                            if self.context.enable_incremental_evaluation {
+                                record_data.register(&mut self.context.cache);
+                            }
+
+                            NickelValue::record(record_data, pos_idx)
+                        }
                         ValueContentRef::EnumVariant(data) => {
                             let EnumVariantData { tag, arg } = data.clone();
                             let arg = arg.map(|arg| arg.closurize(&mut self.context.cache, env));
@@ -1011,6 +1046,11 @@ impl<'ctxt, R: ImportResolver, C: Cache> VirtualMachine<'ctxt, R, C> {
                         fixpoint::patch_field(&mut self.context.cache, rt, &rec_env);
                     }
 
+                    #[cfg(feature = "incremental-experimental")]
+                    if self.context.enable_incremental_evaluation {
+                        static_part.register(&mut self.context.cache);
+                    }
+
                     // Transform the static part `{stat1 = val1, ..., statn = valn}` and the
                     // dynamic part `{exp1 = dyn_val1, ..., expm = dyn_valm}` to a sequence of
                     // extensions
@@ -1072,6 +1112,11 @@ impl<'ctxt, R: ImportResolver, C: Cache> VirtualMachine<'ctxt, R, C> {
                     increment!(format!("import:{id:?}"));
 
                     if let Some(val) = self.context.import_resolver.get(*id) {
+                        #[cfg(feature = "incremental-experimental")]
+                        if self.context.enable_incremental_evaluation {
+                            val.register(&mut self.context.cache);
+                        }
+
                         val.into()
                     } else {
                         break Err(Box::new(EvalErrorKind::InternalError(

@@ -178,12 +178,16 @@ macro_rules! ncl_bench_group {
                                 runner = resolve_imports(&mut pos_table, runner, &mut cache).unwrap().transformed_term;
                             }
 
-                            let vm_ctxt: VmContext<_, CacheImpl> = VmContext::new_with_pos_table(
-                                cache,
-                                pos_table,
-                                std::io::sink(),
-                                nickel_lang_core::error::NullReporter {},
-                            );
+                            let vm_ctxt = VmContext {
+                                    import_resolver: cache,
+                                    trace: Box::new(std::io::sink()),
+                                    reporter: Box::new(nickel_lang_core::error::NullReporter {}),
+                                    cache: eval_cache.clone(),
+                                    extend_env: Vec::new(),
+                                    #[cfg(feature = "incremental-experimental")]
+                                    enable_incremental_evaluation: false,
+                                    pos_table,
+                            };
 
                             // We need to make a new eval environment for each instance. First,
                             // envs contain thunks, which are shared state and will have different
