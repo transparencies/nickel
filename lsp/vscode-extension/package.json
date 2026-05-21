@@ -1,15 +1,15 @@
 {
-  "name": "vscode-nickel",
-  "displayName": "Nickel Language Support",
+  "name": "vscode-nickel-lang",
+  "displayName": "Nickel Configuration Language",
   "description": "Syntax highlighting, formatting and LSP integration for the Nickel programming language in VSCode",
   "author": "Nickel contributors",
   "license": "MIT",
   "version": "0.5.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tweag/nickel"
+    "url": "https://github.com/nickel-lang/nickel"
   },
-  "publisher": "tweag",
+  "publisher": "nickel-lang",
   "categories": [
     "Programming Languages",
     "Language Packs",

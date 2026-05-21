@@ -56,7 +56,7 @@ From the root of the Nickel project:
 nix build .\#vscodeExtension
 ```
 
-The VSIX extension will be at `./result/vscode-nickel.vsix`.
+The VSIX extension will be at `./result/vscode-nickel-lang.vsix`.
 
 ### With Yarn
 
@@ -66,7 +66,7 @@ From this directory:
 yarn install && yarn compile && yarn vsce package --yarn
 ```
 
-The VSIX extension will be at `./vscode-nickel-[version].vsix`.
+The VSIX extension will be at `./vscode-nickel-lang-[version].vsix`.
 
 ## Updating `package.json`
 

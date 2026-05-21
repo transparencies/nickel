@@ -86,25 +86,25 @@ your editor.
 
 #### Build the extension
 
-NLS is currently not available through the vscode marketplace, but this
-repository includes an extension that can be built locally via Nix (see the
-section about the Nix setup).
+NLS is currently available through the vscode and openvsx.org marketplaces (just
+search for `nickel-lang`), but this repository also includes an extension that
+can be built locally via Nix (see the section about the Nix setup).
 
 - One-liner:
 
   ```console
-  code --install-extension $(nix build ./\#vscodeExtension --no-link --print-out-paths)/vscode-nickel.vsix
+  code --install-extension $(nix build ./\#vscodeExtension --no-link --print-out-paths)/vscode-nickel-lang.vsix
   ```
 
 - In two steps, going via VSCode:
   - Build with Nix:
 
       ```console
-      nix build github:tweag/nickel#vscodeExtension
+      nix build github:nickel-lang/nickel#vscodeExtension
       ```
 
   - Then, in VSCode, use "Extension: Install from VSIX" in the vscode command
-    palette and choose `./result/vscode-nickel.vsix`.
+    palette and choose `./result/vscode-nickel-lang.vsix`.
 
 #### Configuration
 
