@@ -145,6 +145,11 @@ pub struct VmContext<R: ImportResolver, C: Cache> {
     pub cache: C,
     /// The position table, mapping position indices to spans.
     pub pos_table: PosTable,
+    /// Bindings to layer on top of the stdlib in the initial environment when a [VirtualMachine]
+    /// is created via [VirtualMachine::new]. On collision, the extension wins; on duplicate
+    /// identifiers within the vector, the later entry wins. Configured via
+    /// [Self::with_extend_env]; defaults to empty.
+    pub extend_env: Vec<(Ident, NickelValue)>,
     /// Whether incremental evaluation is enabled or not. Incremental evaluation is currently
     /// feature-gated, but even when compiled with the feature, it needs to be explicitly enabled
     /// through this feature.
@@ -177,9 +182,19 @@ impl<R: ImportResolver, C: Cache> VmContext<R, C> {
             reporter: Box::new(reporter),
             cache: C::new(),
             pos_table,
+            extend_env: Vec::new(),
             #[cfg(feature = "incremental-experimental")]
             enable_incremental_evaluation: false,
         }
+    }
+
+    /// Layer additional bindings on top of the stdlib in the initial environment of any
+    /// [VirtualMachine] subsequently constructed from this context. Calling this
+    /// multiple times replaces the previously configured bindings. On collision
+    /// with the initial evaluation environment, the extension wins.
+    pub fn with_extend_env(mut self, env: Vec<(Ident, NickelValue)>) -> Self {
+        self.extend_env = env;
+        self
     }
 
     /// Enable incremental evaluation for this VM.
@@ -219,6 +234,15 @@ impl<C: Cache> VmContext<ImportCaches, C> {
         self.prepare_eval_impl(main_id, false)
     }
 
+    /// Register every binding configured via [Self::with_extend_env] in the typing context as
+    /// `Dyn`. No-op if the extend env is empty. Idempotent: callable multiple times.
+    pub fn register_extend_env_for_typecheck(&mut self) {
+        if !self.extend_env.is_empty() {
+            let idents: Vec<_> = self.extend_env.iter().map(|(id, _)| *id).collect();
+            self.import_resolver.add_dyn_type_bindings(idents);
+        }
+    }
+
     fn prepare_eval_impl(
         &mut self,
         main_id: FileId,
@@ -228,6 +252,8 @@ impl<C: Cache> VmContext<ImportCaches, C> {
             "runtime:prepare_stdlib",
             self.import_resolver.prepare_stdlib(&mut self.pos_table)?
         );
+
+        self.register_extend_env_for_typecheck();
 
         measure_runtime!(
             "runtime:prepare_main",
@@ -1272,8 +1298,19 @@ impl<'ctxt, R: ImportResolver, C: Cache> VirtualMachine<'ctxt, R, C> {
 impl<'ctxt, C: Cache> VirtualMachine<'ctxt, ImportCaches, C> {
     /// Creates a new VM, and automatically fills the initial environment with
     /// `context.import_resolver.mk_initial_env()`.
+    ///
+    /// Use [VmContext::with_extend_env] to expose additional names
+    /// at the top level.
     pub fn new(context: &'ctxt mut VmContext<ImportCaches, C>) -> Self {
-        let initial_env = context.import_resolver.mk_eval_env(&mut context.cache);
+        let mut initial_env = context.import_resolver.mk_eval_env(&mut context.cache);
+        // Allocate a fresh thunk for each extras binding. The values were supplied by the
+        // caller in raw form, so we wrap them in closures with an empty local env before
+        // inserting into the initial env. Later entries shadow earlier ones on duplicate
+        // identifiers, and any binding here shadows the stdlib on collision.
+        for (id, value) in &context.extend_env {
+            let idx = context.cache.add(value.clone().into(), BindingType::Normal);
+            initial_env.insert(*id, idx);
+        }
 
         VirtualMachine {
             context,

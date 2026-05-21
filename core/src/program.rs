@@ -34,7 +34,7 @@ use crate::{
         value::{Container, NickelValue, ValueContent},
     },
     files::{FileId, Files},
-    identifier::LocIdent,
+    identifier::{Ident, LocIdent},
     label::Label,
     metrics::{increment, measure_runtime},
     package::PackageMap,
@@ -610,6 +610,8 @@ impl<EC: EvalCache> Program<EC> {
         }
 
         self.vm_ctxt.import_resolver.load_stdlib()?;
+        self.vm_ctxt.register_extend_env_for_typecheck();
+
         self.vm_ctxt
             .import_resolver
             .typecheck(self.main_id, initial_mode)
@@ -1025,6 +1027,7 @@ pub struct ProgramBuilder<R = NullReporter, W = io::Sink> {
     contract_paths: Vec<OsString>,
     import_paths: Vec<PathBuf>,
     package_map: Option<PackageMap>,
+    extra_env: Vec<(Ident, NickelValue)>,
     #[cfg(feature = "incremental-experimental")]
     enable_incremental_evaluation: bool,
     trace: W,
@@ -1049,6 +1052,7 @@ impl ProgramBuilder {
             contract_paths: Vec::new(),
             import_paths: Vec::new(),
             package_map: None,
+            extra_env: Vec::new(),
             #[cfg(feature = "incremental-experimental")]
             enable_incremental_evaluation: false,
             trace: io::sink(),
@@ -1171,6 +1175,7 @@ impl<R, W> ProgramBuilder<R, W> {
             contract_paths: self.contract_paths,
             import_paths: self.import_paths,
             package_map: self.package_map,
+            extra_env: self.extra_env,
             #[cfg(feature = "incremental-experimental")]
             enable_incremental_evaluation: self.enable_incremental_evaluation,
             trace,
@@ -1191,11 +1196,34 @@ impl<R, W> ProgramBuilder<R, W> {
             contract_paths: self.contract_paths,
             import_paths: self.import_paths,
             package_map: self.package_map,
+            extra_env: self.extra_env,
             #[cfg(feature = "incremental-experimental")]
             enable_incremental_evaluation: self.enable_incremental_evaluation,
             trace: self.trace,
             reporter,
         }
+    }
+
+    /// Layer additional bindings in addition to the standard library in the program's initial
+    /// environment.
+    ///
+    /// Calling this method multiple times is additive: bindings accumulate, with later
+    /// calls overriding earlier ones on collision.
+    ///
+    /// ```
+    /// use nickel_lang_core::{
+    ///     eval::value::NickelValue,
+    ///     identifier::Ident,
+    /// };
+    ///
+    /// let extras: Vec<(Ident, NickelValue)> = vec![
+    ///     (Ident::from("hostname"), NickelValue::string_posless("example.com")),
+    /// ];
+    /// // `extras` can now be passed to ProgramBuilder::extend_initial_env
+    /// ```
+    pub fn extend_initial_env(mut self, env: Vec<(Ident, NickelValue)>) -> Self {
+        self.extra_env.extend(env);
+        self
     }
 
     /// Enable incremental evaluation (experimental). Disabled by default.
@@ -1226,6 +1254,7 @@ where
             contract_paths,
             import_paths,
             package_map,
+            extra_env,
             #[cfg(feature = "incremental-experimental")]
             enable_incremental_evaluation,
             trace,
@@ -1284,7 +1313,7 @@ where
         }
 
         #[allow(unused_mut)]
-        let mut vm_ctxt = VmContext::new(cache, trace, reporter);
+        let mut vm_ctxt = VmContext::new(cache, trace, reporter).with_extend_env(extra_env);
 
         #[cfg(feature = "incremental-experimental")]
         if enable_incremental_evaluation {
@@ -1796,5 +1825,73 @@ mod tests {
             Err(e) => panic!("expected IOError, got {e:?}"),
             Ok(_) => panic!("expected error for empty input set"),
         }
+    }
+
+    #[test]
+    fn builder_extend_initial_env_basic() {
+        let mut prog: Program<CacheImpl> = ProgramBuilder::new()
+            .add_source_string("a + 1", "<extras-basic>")
+            .extend_initial_env(vec![("a".into(), mk_term::integer(1))])
+            .build()
+            .unwrap();
+
+        let v = prog.eval().unwrap();
+        assert_eq!(v.without_pos(), mk_term::integer(2));
+    }
+
+    #[test]
+    fn builder_no_extend_unchanged() {
+        let mut prog: Program<CacheImpl> = ProgramBuilder::new()
+            .add_source_string("a + 1", "<extras-absent>")
+            .build()
+            .unwrap();
+
+        let err = prog.eval().expect_err("extras path should not leak");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("UnboundIdentifier"),
+            "expected an unbound-identifier error, got: {msg}",
+        );
+    }
+
+    #[test]
+    fn builder_extras_with_stdlib() {
+        let mut prog: Program<CacheImpl> = ProgramBuilder::new()
+            .add_source_string("std.array.length [a, a, a]", "<extras-stdlib>")
+            .extend_initial_env(vec![("a".into(), mk_term::integer(7))])
+            .build()
+            .unwrap();
+
+        let v = prog.eval().unwrap();
+        assert_eq!(v.without_pos(), mk_term::integer(3));
+    }
+
+    #[test]
+    fn builder_typecheck_accepts_extras() {
+        // In walk mode, untyped code that references `a` typechecks as long as `a` is bound.
+        // Registering `a` as `Dyn` via extras lets the typechecker resolve the identifier.
+        let source = "a + 1";
+        let mut prog: Program<CacheImpl> = ProgramBuilder::new()
+            .add_source_string(source, "<extras-typecheck>")
+            .extend_initial_env(vec![("a".into(), mk_term::integer(1))])
+            .build()
+            .unwrap();
+
+        prog.typecheck(TypecheckMode::Walk)
+            .expect("typecheck should resolve `a` from extras as Dyn");
+    }
+
+    #[test]
+    fn typecheck_unbound_when_extras_absent() {
+        let source = "a + 1";
+        let mut prog: Program<CacheImpl> = ProgramBuilder::new()
+            .add_source_string(source, "<extras-typecheck-absent>")
+            .build()
+            .unwrap();
+
+        let err = prog
+            .typecheck(TypecheckMode::Walk)
+            .expect_err("typecheck must fail without extras");
+        assert_matches!(err, Error::TypecheckError(_));
     }
 }

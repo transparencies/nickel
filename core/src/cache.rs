@@ -1377,6 +1377,16 @@ impl CacheHub {
         asts.add_type_bindings(pos_table, slice, term)
     }
 
+    /// Registers each given identifier in the typing environment as `Dyn`. Used to expose
+    /// host-provided top-level names to the typechecker. See
+    /// [AstCache::add_dyn_type_bindings] for details.
+    pub fn add_dyn_type_bindings<I>(&mut self, idents: I)
+    where
+        I: IntoIterator<Item = crate::identifier::Ident>,
+    {
+        self.asts.add_dyn_type_bindings(&self.sources, idents);
+    }
+
     /// Converts an AST and all of its transitive dependencies to the runtime representation,
     /// populating the term cache. `file_id` and any of its Nickel dependencies must be present in
     /// the AST cache, or [CacheError::IncompatibleState] is returned. However, for non-Nickel
@@ -2851,6 +2861,26 @@ mod ast_cache {
                     .collect();
 
                 *slf.type_ctxt = typecheck::mk_initial_ctxt(slf.alloc, stdlib_terms_vec).unwrap();
+            });
+        }
+
+        /// Adds bindings to the typing environment with type [`ast::typ::TypeF::Dyn`], one per
+        /// identifier in `idents`. Used to expose host-provided extras to the typechecker without
+        /// committing to a more precise type.
+        ///
+        /// Ensures that the initial typing context is populated first, so the registrations are
+        /// layered on top of stdlib and win on collision.
+        pub fn add_dyn_type_bindings<I>(&mut self, sources: &SourceCache, idents: I)
+        where
+            I: IntoIterator<Item = crate::identifier::Ident>,
+        {
+            self.populate_type_ctxt(sources);
+            self.with_mut(|slf| {
+                for ident in idents {
+                    slf.type_ctxt
+                        .type_env
+                        .insert(ident, typecheck::UnifType::concrete(ast::typ::TypeF::Dyn));
+                }
             });
         }
 
