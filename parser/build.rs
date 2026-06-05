@@ -21,7 +21,7 @@ fn main() {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             eprintln!("Generating a fresh LALRPOP grammar");
             lalrpop::Configuration::new()
-                .use_cargo_dir_conventions()
+                .set_out_dir(out_dir.clone())
                 .process_file("src/grammar.lalrpop")
                 .unwrap();
         }

@@ -968,14 +968,14 @@ OrPatternBranch: Pattern<'ast> = {
     // A variant pattern of the form `'<Tag> or`. The trick is to instead
     // consider it as the enum tag pattern `'<Tag>` followed by the `or`
     // contextual keyword after-the-fact.
-    EnumVariantOrPattern => {
-        let pos = <>.pos;
+    <evp: EnumVariantOrPattern> => {
+        let pos = evp.pos;
 
         Pattern {
             pos,
             alias: None,
             data: PatternData::Enum(alloc.alloc(EnumPattern {
-                tag: <>.tag,
+                tag: evp.tag,
                 pattern: None,
                 pos,
             })),
