@@ -51,7 +51,7 @@ use malachite::{
     },
 };
 
-use md5::digest::Digest;
+use md5::digest::Digest as _;
 use simple_counter::*;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -2579,22 +2579,22 @@ impl<'ctxt, R: ImportResolver, C: Cache> VirtualMachine<'ctxt, R, C> {
                     "Md5" => {
                         let mut hasher = md5::Md5::new();
                         hasher.update(s.as_ref());
-                        format!("{:x}", hasher.finalize())
+                        hex_encode(&hasher.finalize())
                     }
                     "Sha1" => {
                         let mut hasher = sha1::Sha1::new();
                         hasher.update(s.as_ref());
-                        format!("{:x}", hasher.finalize())
+                        hex_encode(&hasher.finalize())
                     }
                     "Sha256" => {
                         let mut hasher = sha2::Sha256::new();
                         hasher.update(s.as_ref());
-                        format!("{:x}", hasher.finalize())
+                        hex_encode(&hasher.finalize())
                     }
                     "Sha512" => {
                         let mut hasher = sha2::Sha512::new();
                         hasher.update(s.as_ref());
-                        format!("{:x}", hasher.finalize())
+                        hex_encode(&hasher.finalize())
                     }
                     _ => return mk_err_fst(),
                 };
@@ -3714,6 +3714,15 @@ impl<'ctxt, R: ImportResolver, C: Cache> VirtualMachine<'ctxt, R, C> {
             }
         }
     }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        write!(&mut out, "{b:02x}").unwrap();
+    }
+    out
 }
 
 /// The enum tag returned by Typeof and Cast.

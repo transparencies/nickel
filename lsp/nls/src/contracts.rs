@@ -78,7 +78,7 @@ impl LocalConfig {
     fn from_file(path: &Path) -> Result<Self, anyhow::Error> {
         let local_config: LocalConfigFormat = nickel_lang_core::deserialize::from_path(path)
             // Eagerly format the error, because anyhow requires `Send` errors and ours aren't
-            .map_err(|e| anyhow::anyhow!("{}", e.to_string()))?;
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
         let parent_path = path
             .parent()
             .ok_or_else(|| anyhow::anyhow!("local config {} has no parent", path.display()))?;
