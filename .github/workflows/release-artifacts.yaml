@@ -29,7 +29,7 @@ jobs:
             architecture: arm64
     runs-on: ${{ matrix.os.runs-on }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'release' && '' || github.event.inputs.release_tag }}
       - uses: cachix/install-nix-action@v31
@@ -107,7 +107,7 @@ jobs:
     name: "Build MacOS Nickel binaries"
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'release' && '' || github.event.inputs.release_tag }}
       - uses: cachix/install-nix-action@v31
@@ -144,7 +144,7 @@ jobs:
     name: "Build Windows Nickel binaries"
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'release' && '' || github.event.inputs.release_tag }}
       - name: Install LLVM tools
