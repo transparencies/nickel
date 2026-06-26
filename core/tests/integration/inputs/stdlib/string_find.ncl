@@ -8,5 +8,6 @@ let { string, .. } = std in
   std.string.find "(\\d+)\\.(\\d+)\\.(\\d+)" "1.2.3" == { groups = ["1", "2", "3"], index = 0, matched = "1.2.3" },
   std.string.find "(\\p{Emoji})=(\\w+)" "😀=smiling" == { groups = ["😀", "smiling"], index = 0, matched = "😀=smiling" },
   std.string.find "a(b)?" "ac" == { groups = [""], index = 0, matched = "a" },
+  std.string.find "^$" "" == { groups = [], index = 0, matched = "" },
 ]
 |> std.test.assert_all
