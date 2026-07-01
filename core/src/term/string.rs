@@ -329,10 +329,18 @@ impl NickelString {
             // The indices returned by the `regex` crate are byte offsets into
             // the string, but we need to return the index into the Nickel string,
             // i.e., the grapheme cluster index which starts at this byte offset.
+            //
+            // A match can start at the very end of the string (for example an
+            // empty match like `^$` on the empty string), in which case no
+            // grapheme cluster starts at that byte offset. We append the
+            // byte length paired with the total cluster count so that such a
+            // match maps to the index past the last cluster.
             let adjusted_index = self
                 .grapheme_indices(true)
                 .enumerate()
-                .find_map(|(grapheme_idx, (byte_offset, _))| {
+                .map(|(grapheme_idx, (byte_offset, _))| (byte_offset, grapheme_idx))
+                .chain(std::iter::once((self.len(), self.length())))
+                .find_map(|(byte_offset, grapheme_idx)| {
                     if byte_offset == first_match.start() {
                         Some(grapheme_idx.into())
                     } else {
