@@ -3,6 +3,8 @@ use std::collections::{HashMap, hash_map::Entry};
 
 use super::{Annotation, Ast, Number};
 
+#[cfg(test)]
+use crate::ast::AstAlloc;
 use crate::{
     error::ParseError, identifier::LocIdent, impl_display_from_bytecode_pretty, position::TermPos,
     traverse::*,
@@ -151,6 +153,112 @@ impl Pattern<'_> {
             Some(*id)
         } else {
             None
+        }
+    }
+}
+
+impl<'ast> Pattern<'ast> {
+    #[cfg(test)]
+    /// Recursively remove all positions from a pattern. This is used in testing to check equality
+    /// between expressions while ignoring location.
+    pub fn without_pos(self, alloc: &'ast AstAlloc) -> Pattern<'ast> {
+        let pattern_data = match &self.data {
+            PatternData::Constant(pattern) => {
+                let new_pattern = alloc.alloc(ConstantPattern {
+                    data: pattern.data.clone(),
+                    pos: TermPos::None,
+                });
+                PatternData::Constant(new_pattern)
+            }
+            PatternData::Or(pattern) => {
+                let patterns = alloc.alloc_many(
+                    pattern
+                        .patterns
+                        .into_iter()
+                        .map(|it| it.clone().without_pos(alloc)),
+                );
+                let new_pattern = alloc.alloc(OrPattern {
+                    patterns,
+                    pos: TermPos::None,
+                });
+                PatternData::Or(new_pattern)
+            }
+            PatternData::Any(ident) => PatternData::Any(ident.with_pos(TermPos::None)),
+            PatternData::Array(pattern) => {
+                let patterns = alloc.alloc_many(
+                    pattern
+                        .patterns
+                        .iter()
+                        .map(|it| it.clone().without_pos(alloc)),
+                );
+                let tail = match &pattern.tail {
+                    TailPattern::Capture(ident) => {
+                        TailPattern::Capture(ident.with_pos(TermPos::None))
+                    }
+                    other => other.clone(),
+                };
+                let new_pattern = alloc.alloc(ArrayPattern {
+                    patterns,
+                    tail,
+                    pos: TermPos::None,
+                });
+                PatternData::Array(new_pattern)
+            }
+            PatternData::Enum(pattern) => {
+                let new_pattern = alloc.alloc(EnumPattern {
+                    tag: pattern.tag.with_pos(TermPos::None),
+                    pattern: pattern
+                        .pattern
+                        .as_ref()
+                        .map(|it| it.clone().without_pos(alloc)),
+                    pos: TermPos::None,
+                });
+                PatternData::Enum(new_pattern)
+            }
+            PatternData::Record(pattern) => {
+                let patterns = alloc.alloc_many(pattern.patterns.iter().map(|it| {
+                    let an_typ = it
+                        .annotation
+                        .typ
+                        .clone()
+                        .map(|typ| typ.with_pos(TermPos::None));
+                    let an_contracts = alloc.alloc_many(
+                        it.annotation
+                            .contracts
+                            .iter()
+                            .map(|it| it.clone().with_pos(TermPos::None)),
+                    );
+                    let default = it.default.as_ref().map(|it| it.clone().without_pos(alloc));
+                    FieldPattern {
+                        matched_id: it.matched_id.with_pos(TermPos::None),
+                        annotation: Annotation {
+                            typ: an_typ,
+                            contracts: an_contracts,
+                        },
+                        default,
+                        pattern: it.pattern.clone().without_pos(alloc),
+                        pos: TermPos::None,
+                    }
+                }));
+                let tail = match &pattern.tail {
+                    TailPattern::Capture(ident) => {
+                        TailPattern::Capture(ident.with_pos(TermPos::None))
+                    }
+                    other => other.clone(),
+                };
+                let new_pattern = alloc.alloc(RecordPattern {
+                    patterns,
+                    tail,
+                    pos: TermPos::None,
+                });
+                PatternData::Record(new_pattern)
+            }
+            PatternData::Wildcard => PatternData::Wildcard,
+        };
+        Pattern {
+            data: pattern_data,
+            pos: TermPos::None,
+            alias: self.alias.map(|it| it.with_pos(TermPos::None)),
         }
     }
 }

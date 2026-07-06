@@ -58,5 +58,10 @@
   }
   |> eval {}
   |> (==) 11,
+
+  match {
+    -1 => true,
+    _ => false,
+  } (-1)
 ]
 |> std.test.assert_all
