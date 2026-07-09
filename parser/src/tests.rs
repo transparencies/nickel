@@ -1,7 +1,8 @@
 use crate::{
     ErrorTolerantParser,
     ast::{
-        Ast, AstAlloc, InputFormat, Node, Number, StringChunk, builder,
+        Ast, AstAlloc, InputFormat, MatchBranch, Node, Number, StringChunk, builder,
+        pattern::{ConstantPattern, ConstantPatternData},
         primop::PrimOp,
         record::{FieldDef, FieldMetadata, FieldPathElem, Record},
     },
@@ -706,6 +707,33 @@ fn ty_var_kind_mismatch() {
             name
         )
     }
+}
+
+#[test]
+// Regression test for [#2629](https://github.com/nickel-lang/nickel/issues/2629)
+fn negative_num_in_match_pattern() {
+    use crate::ast::pattern;
+    let alloc = AstAlloc::new();
+
+    let pattern_val = Number::from(-1);
+    let pattern = ConstantPattern {
+        data: ConstantPatternData::Number(&pattern_val),
+        pos: TermPos::None,
+    };
+    assert_eq!(
+        parse_without_pos(&alloc, "match { -1 => 1 }"),
+        alloc
+            .match_expr(vec![MatchBranch {
+                pattern: pattern::Pattern {
+                    data: pattern::PatternData::Constant(&pattern),
+                    alias: None,
+                    pos: TermPos::None
+                },
+                guard: None,
+                body: alloc.number(Number::from(1)).into()
+            }])
+            .into()
+    );
 }
 
 #[test]

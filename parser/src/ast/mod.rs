@@ -487,6 +487,23 @@ impl<'ast> Ast<'ast> {
                         })),
                         ..r.clone()
                     })),
+                    Node::Match(m) => {
+                        let branches = alloc.alloc_many(m.branches.iter().cloned().map(|branch| {
+                            MatchBranch {
+                                pattern: branch.pattern.without_pos(alloc),
+                                ..branch
+                            }
+                        }));
+                        Node::Match(Match { branches })
+                    }
+                    Node::Fun { args, body } => {
+                        let new_args =
+                            alloc.alloc_many(args.iter().map(|it| it.clone().without_pos(alloc)));
+                        Node::Fun {
+                            args: new_args,
+                            body,
+                        }
+                    }
                     n => n,
                 };
                 Ok(Ast {
