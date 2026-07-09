@@ -3,8 +3,6 @@ use std::collections::{HashMap, hash_map::Entry};
 
 use super::{Annotation, Ast, Number};
 
-#[cfg(test)]
-use crate::ast::AstAlloc;
 use crate::{
     error::ParseError, identifier::LocIdent, impl_display_from_bytecode_pretty, position::TermPos,
     traverse::*,
@@ -161,7 +159,7 @@ impl<'ast> Pattern<'ast> {
     #[cfg(test)]
     /// Recursively remove all positions from a pattern. This is used in testing to check equality
     /// between expressions while ignoring location.
-    pub fn without_pos(self, alloc: &'ast AstAlloc) -> Pattern<'ast> {
+    pub fn without_pos(self, alloc: &'ast crate::ast::AstAlloc) -> Pattern<'ast> {
         let pattern_data = match &self.data {
             PatternData::Constant(pattern) => {
                 let new_pattern = alloc.alloc(ConstantPattern {
@@ -174,7 +172,7 @@ impl<'ast> Pattern<'ast> {
                 let patterns = alloc.alloc_many(
                     pattern
                         .patterns
-                        .into_iter()
+                        .iter()
                         .map(|it| it.clone().without_pos(alloc)),
                 );
                 let new_pattern = alloc.alloc(OrPattern {
