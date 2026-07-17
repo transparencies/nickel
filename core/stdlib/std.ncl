@@ -1111,6 +1111,65 @@
         array
         |> sort cmp
         |> dedup_sorted cmp,
+
+    chunk
+      : forall a k. (a -> k) -> Array a -> Array (Array a)
+      | Dyn -> Dyn -> Array std.array.NonEmpty
+      | doc m%"
+
+        Splits an array into maximal consecutive runs of elements that
+        share the same key, where the key of an element is computed by
+        the given function.
+
+        The order of elements is preserved, so flattening the result
+        yields the original array. For any key selection function `f`
+        and any array `xs`, we have:
+
+        `std.array.flatten (std.array.chunk f xs) == xs`
+
+        # Examples
+
+        ```nickel multiline
+        chunk (fun x => x) [1, 1, 2, 3]
+        # => [ [1, 1], [2], [3] ]
+
+        chunk (fun x => x % 2) [1, 3, 2, 4, 5]
+        # => [ [1, 3], [2, 4], [5] ]
+
+        chunk (fun x => x) []
+        # => []
+        ```
+      "%
+      = fun f xs =>
+        xs
+        |> match {
+          [] => [],
+          _ =>
+            let op = fun { chunks, current_key, start, end } x =>
+              let x_key = f x in
+              if x_key != current_key then
+                let chunks = chunks |> append (%array/slice% start end xs) in
+                let start = end in
+                let end = end + 1 in
+                let current_key = x_key in
+                { include [chunks, current_key, start, end] }
+              else
+                let end = end + 1 in
+                { include [chunks, current_key, start, end] }
+            in
+            let init = {
+              chunks = [],
+              current_key = f (first xs),
+              start = 0,
+              end = 1,
+            }
+            in
+            fold_left op init (drop_first xs)
+            |> match {
+              { chunks, start, end, .. } =>
+                chunks |> append (%array/slice% start end xs)
+            }
+        },
   },
 
   contract = {
