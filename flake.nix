@@ -684,14 +684,14 @@
 
       # Build the Nickel VSCode extension
       vscodeExtension = pkgs.mkYarnPackage {
-        pname = "vscode-nickel";
+        pname = "vscode-nickel-lang";
         src = pkgs.lib.cleanSource ./lsp/vscode-extension;
 
         buildPhase = ''
           # yarn tries to create a .yarn file in $HOME. There's probably a
           # better way to fix this but setting HOME to TMPDIR works for now.
           export HOME="$TMPDIR"
-          cd deps/vscode-nickel
+          cd deps/vscode-nickel-lang
           yarn --offline compile
           yarn --offline vsce package --yarn -o $pname.vsix
         '';
