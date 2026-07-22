@@ -11,6 +11,10 @@
   std.array.length [1,2,3] == 3,
   std.array.length ([] @ [1,2] @ [3,4] @ []) == 4,
 
+  # group
+  std.array.group std.to_string [] == {},
+  std.array.group std.to_string [1,2,2,3,3,1] == { "1" = [1,1], "2" = [2,2], "3" = [3,3], },
+
   # sort
   let cmp = fun x y =>
     if x < y then 'Lesser

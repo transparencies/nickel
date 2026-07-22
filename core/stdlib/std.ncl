@@ -524,6 +524,8 @@
           elements that satisfy the predicate, while `wrong` will contain those
           that do not.
 
+          `partition` is a special case of `group`.
+
           # Examples
 
           ```nickel
@@ -531,14 +533,51 @@
           # => { right = [ 2, 4, 3 ], wrong = [ 5, 7, 8, 6 ] }
           ```
         "%
-      = fun pred l =>
-        let aux = fun acc x =>
-          if pred x then
-            { right = acc.right @ [x], wrong = acc.wrong }
-          else
-            { right = acc.right, wrong = acc.wrong @ [x] }
-        in
-        fold_left aux { right = [], wrong = [] } l,
+      = fun pred xs =>
+        let result = group (fun x => if pred x then "right" else "wrong") xs in
+        {
+          right = std.record.get_or "right" [] result,
+          wrong = std.record.get_or "wrong" [] result,
+        },
+
+    group
+      : forall a. (a -> String) -> Array a -> { _ : Array a }
+      | Dyn -> Dyn -> { _ | std.array.NonEmpty }
+      | doc m%"
+        Groups the elements of an array by key. Keys are computed
+        by the given key selection function.
+
+        The result is a dictionary mapping each distinct key to
+        a (non-empty) array of all elements that share this key. The
+        order of the elements is preserved.
+
+        `partition` is a special case of `group`.
+
+        # Examples
+
+        ```nickel multiline
+        group (fun x => x.type) [
+          { type = "fruit", name = "apple" },
+          { type = "vegetable", name = "leek" },
+          { type = "fruit", name = "pear" },
+        ]
+        # => {
+        #      fruit =
+        #        [ { name = "apple", type = "fruit", }, { name = "pear", type = "fruit", } ],
+        #      vegetable = [ { name = "leek", type = "vegetable", } ],
+        #    }
+
+        group (fun x => if x < 5 then "right" else "wrong") [ 2, 4, 5, 3, 7, 8, 6 ]
+        # => { right = [ 2, 4, 3 ], wrong = [ 5, 7, 8, 6 ] }
+        ```
+      "%
+      = fun f =>
+        std.array.fold_left
+          (fun acc x =>
+            let key = f x in
+            std.record.update key (append x (std.record.get_or key [] acc)) acc
+          )
+          {},
 
     generate
       : forall a. (Number -> a) -> Number -> Array a
