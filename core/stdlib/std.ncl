@@ -1140,11 +1140,9 @@
         # => []
         ```
       "%
-      = fun f xs =>
-        xs
-        |> match {
+      = fun f => match {
           [] => [],
-          _ =>
+          xs @ [x1, ..xs'] =>
             let op = fun { chunks, current_key, start, end } x =>
               let x_key = f x in
               if x_key != current_key then
@@ -1159,12 +1157,12 @@
             in
             let init = {
               chunks = [],
-              current_key = f (first xs),
+              current_key = f x1,
               start = 0,
               end = 1,
             }
             in
-            fold_left op init (drop_first xs)
+            fold_left op init xs'
             |> match {
               { chunks, start, end, .. } =>
                 chunks |> append (%array/slice% start end xs)
