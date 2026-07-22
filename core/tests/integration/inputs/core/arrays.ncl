@@ -22,6 +22,10 @@
     else 'Greater
   in std.array.sort cmp [3, 42, -1, -5] == [-5, -1, 3, 42],
 
+  # chunk
+  std.array.chunk (fun x => x) [] == [],
+  std.array.chunk (fun x => x) [1,2,2,3,3,1] == [[1], [2, 2], [3, 3], [1]],
+
   # Test case added after https://github.com/tweag/nickel/issues/154
   let x = 1 in let l = [x] @ [2] in (%array/at% l 0) == 1,
 
