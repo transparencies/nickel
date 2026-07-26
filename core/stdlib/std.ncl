@@ -632,18 +632,33 @@
 
           # Examples
 
-          ```nickel
+          ```nickel multiline
+          std.array.sort std.number.compare [ 4, 5, 1, 2 ]
+          # => [ 1, 2, 4, 5 ]
+
+          std.array.sort std.string.compare [ "c", "b", "baz", "foo", "a", "bar" ]
+          # => [ "a", "b", "bar", "baz", "c", "foo" ]
+
+          # Sort strings by length
           std.array.sort (fun x y =>
-            if x < y then
+            let len_x = std.string.length x in
+            let len_y = std.string.length y in
+            if len_x < len_y then
               'Lesser
-            else if (x == y) then
+            else if (len_x == len_y) then
               'Equal
             else
               'Greater)
-            [ 4, 5, 1, 2 ]
-          # => [ 1, 2, 4, 5 ]
+            [ "c", "foo", "hello", "baz", "a", "b", "world", "bar" ]
+          # => [ "c", "a", "b", "foo", "baz", "bar", "hello", "world" ]
           ```
         "%
+      # The "Sort strings by length" example was added primarily to test how different elements
+      # with equality under the comparison operator are sorted. This is an implementation of
+      # merge sort, which is a stable sorting algorithm, so equal elements will appear in the
+      # same order in the input and output arrays. The test is likely to break if that behavior
+      # changes. While stability isn't a strict requirement, it's preferable not to change this
+      # behavior unnecessarily.
       = fun cmp array =>
         let rec merge = fun first second =>
           [first, second]

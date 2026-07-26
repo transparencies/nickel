@@ -4,9 +4,9 @@ expression: err
 ---
 error: contract broken by a value
        div by zero
-     ┌─ <stdlib/std.ncl>:5453:24
+     ┌─ <stdlib/std.ncl>:5468:24
      │
-5453 │       fun msg => msg | Blame,
+5468 │       fun msg => msg | Blame,
      │                        ----- expected type
      │
      ┌─ [INPUTS_PATH]/errors/fail_with.ncl:5:19
