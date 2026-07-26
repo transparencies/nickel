@@ -646,7 +646,8 @@
         "%
       = fun cmp array =>
         let rec merge = fun first second =>
-          match {
+          [first, second]
+          |> match {
             [[], ys] => ys,
             [xs, []] => xs,
             [[x, ..rest_xs],  [y, ..rest_ys]] =>
@@ -654,19 +655,20 @@
                 [y] @ merge first rest_ys
               else
                 [x] @ merge rest_xs second,
-          } [first, second]
+          }
         in
         let rec merge_sort = fun array =>
-          match {
+          array
+          |> match {
             [] => [],
             [x] => [x],
             xs =>
               let length = %array/length% array in
-              let half = (length / 2) |> std.number.floor in
+              let half = std.number.floor (length / 2) in
               let left = %array/slice% 0 half array in
               let right = %array/slice% half length array in
               merge (merge_sort left) (merge_sort right)
-          } array
+          }
         in
         merge_sort array,
 
