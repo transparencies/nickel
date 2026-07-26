@@ -644,16 +644,31 @@
           # => [ 1, 2, 4, 5 ]
           ```
         "%
-      #TODO: maybe inline partition to avoid contract checks?
       = fun cmp array =>
-        let length = %array/length% array in
-        let first = %array/at% array 0 in
-        let rest = %array/slice% 1 length array in
-        let parts = partition (fun x => (cmp x first == 'Lesser)) rest in
-        if length <= 1 then
-          array
-        else
-          (sort cmp (parts.right)) @ [first] @ (sort cmp (parts.wrong)),
+        let rec merge = fun first second =>
+          match {
+            [[], ys] => ys,
+            [xs, []] => xs,
+            [[x, ..rest_xs],  [y, ..rest_ys]] =>
+              if cmp x y == 'Greater then
+                [y] @ merge first rest_ys
+              else
+                [x] @ merge rest_xs second,
+          } [first, second]
+        in
+        let rec merge_sort = fun array =>
+          match {
+            [] => [],
+            [x] => [x],
+            xs =>
+              let length = %array/length% array in
+              let half = (length / 2) |> std.number.floor in
+              let left = %array/slice% 0 half array in
+              let right = %array/slice% half length array in
+              merge (merge_sort left) (merge_sort right)
+          } array
+        in
+        merge_sort array,
 
     flat_map
       : forall a b. (a -> Array b) -> Array a -> Array b
