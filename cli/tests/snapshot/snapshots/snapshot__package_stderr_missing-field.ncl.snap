@@ -5,9 +5,15 @@ expression: err
 error: failed to evaluate package manifest
 
 error: missing definition for `authors`
+<<<<<<< HEAD
      ┌─ <stdlib/std.ncl>:3588:13
      │
 3588 │             authors
+=======
+     ┌─ <stdlib/std.ncl>:3628:13
+     │
+3628 │             authors
+>>>>>>> 85f946c8 (Fix `std.number.floor` and `std.array.range_step` functions)
      │             ^^^^^^^ required here
      │
      ┌─ [INPUTS_PATH]/package/missing-field.ncl:4:1
