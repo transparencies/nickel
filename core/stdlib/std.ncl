@@ -1044,8 +1044,6 @@
         ```
       "%
       = fun array =>
-        let length = %array/length% array in
-
         fold_left
           (fun acc x =>
             if elem x acc then
