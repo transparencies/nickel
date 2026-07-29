@@ -2860,12 +2860,11 @@
         ```
       "%
       = fun x =>
-        if x % 1 == 0 then
-          x
-        else if x >= 0 then
-          x - (x % 1)
+        let r = x % 1 in
+        if r >= 0 then
+          x - r
         else
-          x - 1 - (x % 1),
+          x - 1 - r,
 
     ceil
       : Number -> Number
@@ -2886,12 +2885,11 @@
         ```
       "%
       = fun x =>
-        if x % 1 == 0 then
-          x
-        else if x >= 0 then
-          x + (1 - (x % 1))
+        let r = x % 1 in
+        if r <= 0 then
+          x - r
         else
-          x - (x % 1),
+          x - r + 1,
 
     abs
       : Number -> Number

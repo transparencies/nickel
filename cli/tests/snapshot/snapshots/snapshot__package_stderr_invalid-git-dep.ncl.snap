@@ -6,15 +6,9 @@ error: failed to evaluate package manifest
 
 error: contract broken by the value of `ref`
        expected 40 characters, got 18
-<<<<<<< HEAD
-     ┌─ <stdlib/std.ncl>:3495:17
+     ┌─ <stdlib/std.ncl>:3531:17
      │
-3495 │               | [| 'Head, 'Branch String, 'Tag String, 'Commit std.package.GitId |]
-=======
-     ┌─ <stdlib/std.ncl>:3535:17
-     │
-3535 │               | [| 'Head, 'Branch String, 'Tag String, 'Commit std.package.GitId |]
->>>>>>> 85f946c8 (Fix `std.number.floor` and `std.array.range_step` functions)
+3531 │               | [| 'Head, 'Branch String, 'Tag String, 'Commit std.package.GitId |]
      │                 ------------------------------------------------------------------- expected type
      │
      ┌─ [INPUTS_PATH]/package/invalid-git-dep.ncl:10:60

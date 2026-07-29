@@ -6,15 +6,9 @@ error: failed to evaluate package manifest
 
 error: contract broken by the value of `version`
        invalid semver
-<<<<<<< HEAD
-     ┌─ <stdlib/std.ncl>:3574:17
+     ┌─ <stdlib/std.ncl>:3610:17
      │
-3574 │               | Semver
-=======
-     ┌─ <stdlib/std.ncl>:3614:17
-     │
-3614 │               | Semver
->>>>>>> 85f946c8 (Fix `std.number.floor` and `std.array.range_step` functions)
+3610 │               | Semver
      │                 ------ expected type
      │
      ┌─ [INPUTS_PATH]/package/invalid-version.ncl:6:13
