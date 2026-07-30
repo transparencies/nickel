@@ -1152,7 +1152,6 @@
     # not polymorphic.
     chunk
       : forall a. (a -> Dyn) -> Array a -> Array (Array a)
-      | Dyn -> Dyn -> Array std.array.NonEmpty
       | doc m%"
 
         Splits an array into maximal consecutive runs of elements that
