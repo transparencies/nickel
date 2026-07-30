@@ -1149,8 +1149,10 @@
         |> sort cmp
         |> dedup_sorted cmp,
 
+    # **Warning**: see the note at top of `elem` for why the key type is
+    # not polymorphic.
     chunk
-      : forall a k. (a -> k) -> Array a -> Array (Array a)
+      : forall a. (a -> Dyn) -> Array a -> Array (Array a)
       | Dyn -> Dyn -> Array std.array.NonEmpty
       | doc m%"
 
