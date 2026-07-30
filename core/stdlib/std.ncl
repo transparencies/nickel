@@ -827,14 +827,21 @@
 
           # Examples
 
-          ```nickel
+          ```nickel multiline
           std.array.range_step (-1.5) 2 0.5
            # => [ -1.5, -1, -0.5, 0, 0.5, 1, 1.5 ]
+
+          std.array.range_step 0 17 8
+          # => [ 0, 8, 16 ]
+
+          # If a step generates a value equal to `end`, it is excluded.
+          std.array.range_step 0 16 8
+          # => [ 0, 8 ]
           ```
         "%
       = fun start end step =>
         %array/generate%
-          ((end - start) / step |> std.number.floor)
+          ((end - start) / step |> std.number.ceil)
           (fun i => start + i * step),
 
     range
@@ -2073,7 +2080,7 @@
             "%
           =
             %contract/custom% (fun _label value =>
-              if %typeof% value == 'Number && value < 0 then
+              if %typeof% value == 'Number && value <= 0 then
                 'Error {
                   message = "invalid range step",
                   notes = ["Expected a positive number, got %{value}"],
@@ -2847,13 +2854,42 @@
 
         std.number.floor (-42.5)
         # => -43
+
+        std.number.floor (-3)
+        # => -3
         ```
       "%
       = fun x =>
-        if x >= 0 then
-          x - (x % 1)
+        let r = x % 1 in
+        if r >= 0 then
+          x - r
         else
-          x - 1 - (x % 1),
+          x - 1 - r,
+
+    ceil
+      : Number -> Number
+      | doc m%"
+        Rounds a number up to the next integer.
+
+        # Examples
+
+        ```nickel multiline
+        std.number.ceil 22.3
+        # => 23
+
+        std.number.ceil (-12.7)
+        # => -12
+
+        std.number.ceil (-4)
+        # => -4
+        ```
+      "%
+      = fun x =>
+        let r = x % 1 in
+        if r <= 0 then
+          x - r
+        else
+          x - r + 1,
 
     abs
       : Number -> Number
