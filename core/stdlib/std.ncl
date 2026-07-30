@@ -542,7 +542,6 @@
 
     group
       : forall a. (a -> String) -> Array a -> { _ : Array a }
-      | Dyn -> Dyn -> { _ | std.array.NonEmpty }
       | doc m%"
         Groups the elements of an array by key. Keys are computed
         by the given key selection function.
@@ -1149,9 +1148,10 @@
         |> sort cmp
         |> dedup_sorted cmp,
 
+    # **Warning**: see the note at top of `elem` for why the key type is
+    # not polymorphic.
     chunk
-      : forall a k. (a -> k) -> Array a -> Array (Array a)
-      | Dyn -> Dyn -> Array std.array.NonEmpty
+      : forall a. (a -> Dyn) -> Array a -> Array (Array a)
       | doc m%"
 
         Splits an array into maximal consecutive runs of elements that
