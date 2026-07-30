@@ -542,7 +542,6 @@
 
     group
       : forall a. (a -> String) -> Array a -> { _ : Array a }
-      | Dyn -> Dyn -> { _ | std.array.NonEmpty }
       | doc m%"
         Groups the elements of an array by key. Keys are computed
         by the given key selection function.
