@@ -4858,7 +4858,7 @@
         # Preconditions
 
         In `substring start end str`, `start` and `end` must be positive integers
-        such that `0 <= start <= end <= std.array.length value`.
+        such that `0 <= start <= end <= std.string.length value`.
 
         # Examples
 
